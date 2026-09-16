@@ -1,0 +1,5 @@
+# Dependencias de desarrollo y pruebas del backend.
+# No se instalan en la imagen de producción del contenedor.
+-r requirements.txt
+pytest==8.3.4
+httpx==0.28.1

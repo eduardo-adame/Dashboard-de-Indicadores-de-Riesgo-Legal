@@ -1,0 +1,10 @@
+# Embeddings locales mediante BGE-M3.
+#
+# Se usa sentence-transformers para obtener únicamente la representación DENSA de
+# 1,024 dimensiones. Esto es deliberado: BGE-M3 también expone una salida sparse
+# (pesos léxicos por término), y la recuperación léxica del sistema debe resolverla
+# BM25 de forma independiente. Al no instalar FlagEmbedding se elimina de raíz la
+# posibilidad de que el componente sparse del modelo se confunda con BM25.
+#
+# torch se instala por separado en el Dockerfile desde el índice CPU-only.
+sentence-transformers==3.3.1

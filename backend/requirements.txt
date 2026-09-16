@@ -1,0 +1,7 @@
+# Núcleo del backend. Sin dependencias de ML: el servicio debe arrancar aunque
+# el modelo BGE-M3 aún no esté disponible (degradación elegante).
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.0
+psycopg[binary]==3.2.3
