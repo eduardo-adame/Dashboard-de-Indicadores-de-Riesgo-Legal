@@ -31,16 +31,20 @@ Decisiones de diseño que este módulo materializa:
   prevalecería sobre la variable de entorno y provocaría que el modelo se
   descargara dos veces dentro del mismo volumen.
 
-* **La caché la puebla la librería, y solo desde la rama principal.**
-  Debe evitarse pre-poblar la caché con una descarga del snapshot completo o de
-  otras referencias del repositorio. Eso añade artefactos que el servicio nunca
-  utiliza y que la rama principal ni siquiera contiene: exportación ONNX, imágenes
-  de documentación, pesos de las variantes sparse y colbert, y variantes de pesos
-  publicadas en referencias no fusionadas. Una caché así puede triplicar la huella
-  necesaria y no se reduce sola, porque la referencia que la introdujo permanece en
-  el volumen y vuelve a materializar el artefacto. La librería descarga por sí misma
-  solo lo que resuelve: el directorio raíz del snapshot y los módulos declarados en
-  `modules.json`.
+* **La caché la puebla la librería, y solo desde la rama principal.** Debe evitarse
+  pre-poblar la caché con una descarga del snapshot completo: eso añade artefactos
+  que el servicio nunca utiliza (exportación ONNX, imágenes de documentación, pesos
+  de las variantes sparse y colbert) y eleva la huella muy por encima de lo
+  necesario. La librería descarga por sí misma solo lo que resuelve: el directorio
+  raíz del snapshot y los módulos declarados en `modules.json`.
+
+* **La caché contiene dos archivos de pesos y no se puede reducir a uno.**
+  `transformers`, al cargar el modelo, busca una variante `safetensors` y la
+  encuentra en una referencia de pull request del repositorio, no en la rama
+  principal (que solo publica `pytorch_model.bin`). Eliminar el segundo archivo no
+  sirve: se ha verificado que vuelve a descargarse en cada carga fresca del modelo,
+  incluso dejando el centinela de ausencia en la caché. La huella estable de
+  referencia es de unos 4.3 GB.
 
 Alcance: este módulo no indexa, no persiste vectores y no implementa recuperación.
 """
