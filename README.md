@@ -228,6 +228,13 @@ curl -X POST http://localhost:8000/health/embeddings/probe
 > modelo, incluso dejando el centinela de ausencia en la caché. Por eso la huella
 > de referencia es ~4.3 GB y no se documenta una cifra menor.
 >
+> La librería ofrece un mecanismo oficial para desactivar esa conversión automática
+> —la variable de entorno `DISABLE_SAFETENSORS_CONVERSION`—, que **no está
+> activada**: el servicio funciona con el comportamiento por defecto. Su adopción
+> depende del comportamiento y del versionado de la librería y debe evaluarse por
+> separado antes de incorporarla. Conviene notar que no cambiaría el artefacto que
+> se carga; solo suprimiría una descarga en segundo plano.
+>
 > **No pre-poblar la caché con una descarga del repositorio completo.** Hacerlo
 > añade artefactos que el servicio nunca utiliza y que ni la rama principal ni la
 > carga normal introducen: exportación ONNX, imágenes de documentación y pesos de

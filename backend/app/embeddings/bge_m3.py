@@ -38,13 +38,26 @@ Decisiones de diseño que este módulo materializa:
   necesario. La librería descarga por sí misma solo lo que resuelve: el directorio
   raíz del snapshot y los módulos declarados en `modules.json`.
 
-* **La caché contiene dos archivos de pesos y no se puede reducir a uno.**
+* **La caché contiene dos archivos de pesos con la configuración por defecto.**
   `transformers`, al cargar el modelo, busca una variante `safetensors` y la
   encuentra en una referencia de pull request del repositorio, no en la rama
-  principal (que solo publica `pytorch_model.bin`). Eliminar el segundo archivo no
-  sirve: se ha verificado que vuelve a descargarse en cada carga fresca del modelo,
-  incluso dejando el centinela de ausencia en la caché. La huella estable de
-  referencia es de unos 4.3 GB.
+  principal (que solo publica `pytorch_model.bin`). Esa búsqueda es la conversión
+  automática de pesos que la librería realiza por defecto. Retirar el segundo
+  archivo a mano no reduce la huella: vuelve a descargarse en cada carga del modelo
+  desde un proceso nuevo, incluso dejando el centinela de ausencia en la caché. La
+  huella estable de referencia con la configuración por defecto es de unos 4.3 GB.
+
+  La librería ofrece un mecanismo oficial para desactivar esa conversión
+  automática: la variable de entorno ``DISABLE_SAFETENSORS_CONVERSION``. **No está
+  activada**: este servicio funciona con el comportamiento por defecto y no define
+  esa variable en ningún punto. Su adopción corresponde a una decisión de
+  infraestructura registrada aparte, pendiente de evaluación, y depende del
+  comportamiento y del versionado de la librería, por lo que debe considerarse por
+  separado antes de incorporarla al producto.
+
+  Conviene notar que el mecanismo **no cambia el artefacto que se carga** —hoy es
+  `pytorch_model.bin`—; solo suprimiría la descarga en segundo plano de un archivo
+  que no se utiliza.
 
 Alcance: este módulo no indexa, no persiste vectores y no implementa recuperación.
 """
