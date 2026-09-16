@@ -1,0 +1,337 @@
+# ==============================================================================
+# Docker Compose — Dashboard de Indicadores de Riesgo Legal
+#
+# TOPOLOGÍA: cuatro servicios lógicos.
+#     1. frontend   — React construido y servido por nginx
+#     2. backend    — API con el modelo de embeddings local
+#     3. postgres   — PostgreSQL con pgvector
+#     4. airflow    — orquestación
+#
+# El sistema no necesita Redis, RabbitMQ, Elasticsearch, un segundo PostgreSQL
+# ni un servicio de embeddings independiente: los embeddings se ejecutan como
+# librería dentro del backend.
+#
+# AIRFLOW: es un único servicio lógico materializado en varios contenedores de la
+# misma imagen (inicialización, scheduler y webserver). Todos llevan la etiqueta
+# `riesgo-legal.logical-service: airflow` para que el recuento de servicios
+# lógicos siga siendo cuatro. Sus metadatos usan SQLite sobre el volumen dedicado
+# `airflow_db`, independiente de los datos de PostgreSQL y de la caché del modelo.
+#
+# ARRANQUE SELECTIVO: los contenedores de Airflow están tras el perfil `airflow`,
+# de modo que el trabajo diario no obliga a mantener activos los componentes más
+# pesados.
+#     desarrollo ligero : docker compose up -d
+#     stack completo    : docker compose --profile airflow up -d
+# El perfil no elimina ningún servicio: el stack completo sigue siendo el mismo.
+#
+# RECURSOS: los límites de memoria son TECHOS para reproducibilidad y control, no
+# reservas. Se inspiran en la configuración de referencia del proyecto (16 GB de
+# RAM repartidos en 8 GB para PostgreSQL, 4 GB para el backend y 4 GB para
+# servicios auxiliares y sistema operativo). Cualquier equipo puede reducirlos
+# desde .env según sus recursos disponibles.
+# ==============================================================================
+
+name: riesgo-legal
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.10.5-python3.12
+  restart: unless-stopped
+  environment: &airflow-env
+    # SequentialExecutor es obligatorio con SQLite: SQLite no soporta acceso
+    # concurrente de escritura entre varios procesos de ejecución de tareas.
+    AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+    # SQLite serializa el parseo de DAGs; declarar un único proceso evita
+    # advertencias y contención innecesaria.
+    AIRFLOW__CORE__PARSING_PROCESSES: "1"
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "False"
+    AIRFLOW__WEBSERVER__RBAC: "True"
+    # Un único worker de gunicorn: en equipos con recursos limitados el arranque
+    # con varios workers tarda lo suficiente como para que el maestro no responda
+    # dentro del plazo por defecto y el webserver se reinicie en bucle.
+    AIRFLOW__WEBSERVER__WORKERS: "1"
+    AIRFLOW__WEBSERVER__WORKER_TIMEOUT: "240"
+    AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT: "300"
+    AIRFLOW__LOGGING__COLORED_CONSOLE_LOG: "False"
+    # Metadatos en SQLite sobre un volumen dedicado. No se usa PostgreSQL para
+    # esta base: mantiene la orquestación desacoplada del modelo de datos de la
+    # aplicación.
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/sqlite_db/airflow.db
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET_KEY:-}
+  volumes:
+    - airflow_db:/opt/airflow/sqlite_db
+    - airflow_logs:/opt/airflow/logs
+  networks:
+    - riesgo-legal
+  profiles: ["airflow"]
+
+services:
+  # --------------------------------------------------------------------------
+  # Servicio lógico 1/4 — PostgreSQL con pgvector
+  # --------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: riesgo-legal-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD debe definirse en producto/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-riesgo_legal}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-512MB}
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-100}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - riesgo-legal
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: ${POSTGRES_MEM_LIMIT:-8g}
+
+  # --------------------------------------------------------------------------
+  # Servicio lógico 2/4 — backend (API + modelo de embeddings local)
+  # --------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: riesgo-legal-backend:bootstrap
+    container_name: riesgo-legal-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_NAME: ${APP_NAME:-backend-riesgo-legal}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD debe definirse en producto/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-riesgo_legal}
+      # El modelo se carga como librería local; todas las rutas de caché derivan
+      # de BGE_M3_CACHE_DIR, que debe coincidir con el punto de montaje de abajo.
+      BGE_M3_MODEL_ID: ${BGE_M3_MODEL_ID:-BAAI/bge-m3}
+      BGE_M3_CACHE_DIR: /home/appuser/.cache/bge-m3
+      HF_HOME: /home/appuser/.cache/bge-m3/huggingface
+      HF_HUB_CACHE: /home/appuser/.cache/bge-m3/huggingface/hub
+      SENTENCE_TRANSFORMERS_HOME: /home/appuser/.cache/bge-m3/sentence_transformers
+      EMBEDDING_DIMENSIONS: "1024"
+      BGE_M3_REQUIRED_AT_STARTUP: "False"
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000}
+    volumes:
+      # Caché persistente del modelo: sobrevive a `docker compose down` (sin -v)
+      # y evita volver a descargar varios gigabytes entre recreaciones.
+      - bge_cache:/home/appuser/.cache/bge-m3
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    networks:
+      - riesgo-legal
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status==200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${BACKEND_MEM_LIMIT:-4g}
+
+  # --------------------------------------------------------------------------
+  # Servicio lógico 3/4 — frontend
+  # --------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: riesgo-legal-frontend:bootstrap
+    container_name: riesgo-legal-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      VITE_BACKEND_HEALTH_URL: ${VITE_BACKEND_HEALTH_URL:-http://localhost:8000/health}
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    networks:
+      - riesgo-legal
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://127.0.0.1/health
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: ${FRONTEND_MEM_LIMIT:-256m}
+
+  # --------------------------------------------------------------------------
+  # Servicio lógico 4/4 — Airflow (inicialización, scheduler y webserver)
+  # Los tres contenedores comparten imagen y etiqueta de servicio lógico.
+  # --------------------------------------------------------------------------
+  airflow-init:
+    <<: *airflow-common
+    container_name: riesgo-legal-airflow-init
+    # root solo para preparar la propiedad de los directorios del volumen, que se
+    # crean vacíos y deben pertenecer al usuario con el que corre Airflow.
+    user: root
+    restart: "no"
+    environment:
+      <<: *airflow-env
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-admin}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?AIRFLOW_ADMIN_PASSWORD debe definirse en producto/.env}
+      AIRFLOW_ADMIN_EMAIL: ${AIRFLOW_ADMIN_EMAIL:-admin@example.local}
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        mkdir -p /opt/airflow/sqlite_db /opt/airflow/logs /opt/airflow/dags
+        echo "Inicializando metadatos de Airflow (SQLite en volumen dedicado)"
+        airflow db migrate
+        airflow users create \
+          --role Admin \
+          --username "$${AIRFLOW_ADMIN_USER}" \
+          --password "$${AIRFLOW_ADMIN_PASSWORD}" \
+          --firstname Admin \
+          --lastname Operador \
+          --email "$${AIRFLOW_ADMIN_EMAIL}" || echo "Usuario administrador ya existente"
+        chown -R 50000:50000 /opt/airflow/sqlite_db /opt/airflow/logs
+        echo "Inicialización de Airflow completada"
+    labels:
+      riesgo-legal.logical-service: airflow
+      riesgo-legal.role: init
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: riesgo-legal-airflow-scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: scheduler
+    labels:
+      riesgo-legal.logical-service: airflow
+      riesgo-legal.role: scheduler
+    healthcheck:
+      # El scheduler publica su heartbeat en la base de metadatos. Comprobarlo
+      # directamente es más ligero y fiable que invocar la CLI de Airflow, que
+      # arranca todo el contexto de la aplicación y sobre SQLite excede el plazo
+      # habitual de un healthcheck.
+      #
+      # Se usa un bloque literal (|) y no plegado (>-): el plegado uniría todas las
+      # sentencias en una sola línea y una secuencia como `if x: exit(1); y = ...`
+      # incluiría la asignación dentro del `if`.
+      test:
+        - CMD-SHELL
+        - |
+          python -c "
+          from datetime import datetime, timedelta, timezone
+          import sqlite3
+
+          conn = sqlite3.connect('/opt/airflow/sqlite_db/airflow.db', timeout=10)
+          row = conn.execute(
+              'select max(latest_heartbeat) from job where job_type=?',
+              ('SchedulerJob',),
+          ).fetchone()
+          conn.close()
+
+          if not row or not row[0]:
+              raise SystemExit(1)
+
+          raw = str(row[0]).replace(' ', 'T')
+          if '+' not in raw and not raw.endswith('Z'):
+              raw += '+00:00'
+
+          heartbeat = datetime.fromisoformat(raw)
+          if heartbeat.tzinfo is None:
+              heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+
+          age = datetime.now(timezone.utc) - heartbeat
+          raise SystemExit(0 if age < timedelta(minutes=5) else 1)
+          "
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: ${AIRFLOW_SCHEDULER_MEM_LIMIT:-1g}
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: riesgo-legal-airflow-webserver
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-scheduler:
+        condition: service_started
+    command: webserver
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    labels:
+      riesgo-legal.logical-service: airflow
+      riesgo-legal.role: webserver
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -fsS http://localhost:8080/health >/dev/null 2>&1
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          memory: ${AIRFLOW_WEBSERVER_MEM_LIMIT:-1g}
+
+# ------------------------------------------------------------------------------
+# Volúmenes nombrados y persistentes. Se mantienen SEPARADOS a propósito: los
+# datos de la base, la caché del modelo y los metadatos de la orquestación tienen
+# ciclos de vida distintos y no deben compartir almacenamiento.
+# Ninguno se versiona en Git.
+# ------------------------------------------------------------------------------
+volumes:
+  pgdata:
+    name: riesgo-legal-pgdata
+  bge_cache:
+    name: riesgo-legal-bge-cache
+  airflow_db:
+    name: riesgo-legal-airflow-db
+  airflow_logs:
+    name: riesgo-legal-airflow-logs
+
+networks:
+  riesgo-legal:
+    name: riesgo-legal-net
+    driver: bridge
