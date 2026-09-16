@@ -153,13 +153,19 @@ class BgeM3EmbeddingService:
         """
         os.makedirs(self._cache_dir, exist_ok=True)
 
+        # Todas las variables de caché convergen en UNA SOLA raíz.
+        #
+        # No basta con no pasar `cache_folder`: la librería cae entonces a
+        # `SENTENCE_TRANSFORMERS_HOME`, que es el mismo parámetro por otra vía
+        # (`if cache_folder is None: cache_folder = os.getenv(...)`). Si esa
+        # variable apuntara a otro directorio, el modelo se descargaría dos veces
+        # dentro del mismo volumen. Por eso se fijan todas al mismo valor.
+        root = self.effective_cache_root
         derived = {
             "HF_HOME": os.path.join(self._cache_dir, "huggingface"),
-            "HF_HUB_CACHE": os.path.join(self._cache_dir, "huggingface", "hub"),
-            "SENTENCE_TRANSFORMERS_HOME": os.path.join(
-                self._cache_dir, "sentence_transformers"
-            ),
-            "TRANSFORMERS_CACHE": os.path.join(self._cache_dir, "huggingface", "hub"),
+            "HF_HUB_CACHE": root,
+            "SENTENCE_TRANSFORMERS_HOME": root,
+            "TRANSFORMERS_CACHE": root,
             # Sin telemetría: evita salidas de red no necesarias.
             "HF_HUB_DISABLE_TELEMETRY": "1",
         }

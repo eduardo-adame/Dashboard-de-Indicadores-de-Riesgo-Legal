@@ -11,6 +11,7 @@ Se distinguen dos tipos:
 from __future__ import annotations
 
 import os
+import re
 import sys
 import types
 from pathlib import Path
@@ -27,6 +28,13 @@ from app.embeddings.bge_m3 import (
 )
 
 EXPECTED_DIMENSIONS = 1024
+
+# Subruta de la raíz única de caché, relativa a BGE_M3_CACHE_DIR.
+CACHE_ROOT_SUBPATH = ("huggingface", "hub")
+
+# Variables que deben apuntar EXACTAMENTE a la raíz única. Un directorio hermano
+# distinto provoca una segunda descarga del modelo dentro del mismo volumen.
+CACHE_ROOT_VARIABLES = ("HF_HUB_CACHE", "SENTENCE_TRANSFORMERS_HOME", "TRANSFORMERS_CACHE")
 
 
 @pytest.fixture(autouse=True)
@@ -214,10 +222,133 @@ def test_cache_env_overrides_stale_inherited_value(
     service._configure_cache_env()  # noqa: SLF001 - verificación interna
 
     assert os.environ["HF_HOME"] == os.path.join(service.cache_dir, "huggingface")
-    assert os.environ["SENTENCE_TRANSFORMERS_HOME"] == os.path.join(
-        service.cache_dir, "sentence_transformers"
-    )
+    assert os.environ["SENTENCE_TRANSFORMERS_HOME"] == service.effective_cache_root
     assert os.environ["HF_HOME"].startswith(service.cache_dir)
+
+
+@pytest.mark.robustness
+def test_all_cache_variables_converge_on_a_single_root() -> None:
+    """Regresión: TODAS las variables de caché apuntan a la misma raíz.
+
+    No basta con no pasar `cache_folder`: la librería cae entonces a
+    `SENTENCE_TRANSFORMERS_HOME`, que es el mismo parámetro por otra vía. Si esa
+    variable apuntara a otro directorio, el modelo se descargaría dos veces
+    dentro del mismo volumen — exactamente la duplicación que se corrige.
+    """
+    service = get_embedding_service()
+    service._configure_cache_env()  # noqa: SLF001 - verificación interna
+
+    root = service.effective_cache_root
+    assert root == str(Path(service.cache_dir, *CACHE_ROOT_SUBPATH)), (
+        "la raíz efectiva debe derivarse de BGE_M3_CACHE_DIR"
+    )
+
+    for var in CACHE_ROOT_VARIABLES:
+        assert os.environ[var] == root, (
+            f"{var} debe converger en la raíz única {root}, no en {os.environ[var]}"
+        )
+
+    # HF_HOME es el directorio padre del hub: la raíz debe quedar dentro de él.
+    assert root.startswith(os.environ["HF_HOME"])
+
+    # Ninguna variable debe apuntar a un directorio hermano distinto.
+    siblings = {os.environ[v] for v in CACHE_ROOT_VARIABLES}
+    assert len(siblings) == 1, f"hay más de una raíz de caché: {siblings}"
+
+
+def _declared_cache_env() -> dict[str, str]:
+    """Variables de caché declaradas en `docker-compose.yml`.
+
+    Se leen del archivo en lugar de asumirlas para poder comprobar la política
+    declarativa, que es la que rige antes de que el servicio arranque.
+    """
+    compose_path = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+    if not compose_path.exists():
+        pytest.skip("docker-compose.yml no presente en esta etapa")
+
+    text = compose_path.read_text(encoding="utf-8")
+    declared: dict[str, str] = {}
+    for var in (*CACHE_ROOT_VARIABLES, "BGE_M3_CACHE_DIR", "HF_HOME"):
+        match = re.search(rf"^\s*{var}:\s*(\S+)\s*$", text, re.MULTILINE)
+        if match:
+            declared[var] = match.group(1).strip().strip("\"'")
+    return declared
+
+
+def _declared_root(declared: dict[str, str]) -> str:
+    """Raíz de caché declarada, en convención POSIX.
+
+    Las rutas del Compose son rutas de contenedor (POSIX), no rutas del sistema
+    de archivos donde se ejecutan las pruebas. Construirlas con `Path` las
+    convertiría a separadores de Windows y la comparación no tendría sentido.
+    """
+    return declared["BGE_M3_CACHE_DIR"].rstrip("/") + "/" + "/".join(CACHE_ROOT_SUBPATH)
+
+
+@pytest.mark.robustness
+def test_compose_declares_a_single_cache_root() -> None:
+    """La configuración declarada en Compose no debe introducir una segunda raíz.
+
+    Comprobar solo el valor efectivo en tiempo de ejecución no bastaría: si el
+    Compose declara un directorio hermano, la duplicación reaparece en cuanto algo
+    deje de sobrescribirlo. La política declarativa debe ser correcta por sí misma.
+    """
+    declared = _declared_cache_env()
+    if "BGE_M3_CACHE_DIR" not in declared:
+        pytest.skip("BGE_M3_CACHE_DIR no declarado en el Compose")
+
+    expected_root = _declared_root(declared)
+
+    for var in CACHE_ROOT_VARIABLES:
+        assert var in declared, f"{var} debe estar declarado en el Compose"
+        assert declared[var] == expected_root, (
+            f"{var} declarado como {declared[var]}; debe ser la raíz única {expected_root}"
+        )
+
+    # HF_HOME es el directorio padre que contiene la raíz del hub, no la raíz.
+    if "HF_HOME" in declared:
+        assert expected_root.startswith(declared["HF_HOME"]), (
+            "HF_HOME debe ser el directorio padre de la raíz de caché"
+        )
+        assert declared["HF_HOME"] != expected_root, (
+            "HF_HOME no debe confundirse con la raíz del hub"
+        )
+
+    # Guarda explícita contra el directorio hermano que causó la duplicación.
+    for var, value in declared.items():
+        assert "sentence_transformers" not in value, (
+            f"{var} apunta a un directorio hermano: {value}"
+        )
+
+
+@pytest.mark.robustness
+def test_declared_and_effective_cache_policies_agree() -> None:
+    """La política declarada y la efectiva derivan la raíz de la misma forma.
+
+    Ambas deben construir la raíz como `<BGE_M3_CACHE_DIR>/huggingface/hub`. Si
+    divergieran, la configuración declarativa y la efectiva dejarían de ser una
+    sola política y la duplicación podría reaparecer.
+    """
+    declared = _declared_cache_env()
+    if "BGE_M3_CACHE_DIR" not in declared:
+        pytest.skip("BGE_M3_CACHE_DIR no declarado en el Compose")
+
+    # Estructura relativa declarada, en convención POSIX.
+    declared_parts = tuple(Path(_declared_root(declared)).parts[-2:])
+
+    service = get_embedding_service()
+    effective_root = service.effective_cache_root
+
+    # La raíz efectiva se deriva de BGE_M3_CACHE_DIR con la misma subruta.
+    assert os.path.normcase(effective_root) == os.path.normcase(
+        os.path.join(service.cache_dir, *CACHE_ROOT_SUBPATH)
+    ), "la raíz efectiva debe derivarse de BGE_M3_CACHE_DIR"
+
+    # Y la subruta debe ser idéntica a la declarada.
+    effective_parts = tuple(Path(effective_root).parts[-2:])
+    assert declared_parts == effective_parts == CACHE_ROOT_SUBPATH, (
+        "la subruta de la raíz debe coincidir entre la política declarada y la efectiva"
+    )
 
 
 @pytest.mark.robustness

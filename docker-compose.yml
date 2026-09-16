@@ -126,13 +126,19 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-app}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD debe definirse en producto/.env}
       POSTGRES_DB: ${POSTGRES_DB:-riesgo_legal}
-      # El modelo se carga como librería local; todas las rutas de caché derivan
-      # de BGE_M3_CACHE_DIR, que debe coincidir con el punto de montaje de abajo.
+      # --- Modelo de embeddings -------------------------------------------------
+      # Raíz única de caché: las tres variables de localización del modelo
+      # convergen en el mismo directorio. Si alguna apuntara a un directorio
+      # hermano (por ejemplo `<caché>/sentence_transformers`), la librería
+      # descargaría el modelo dos veces dentro del mismo volumen. Las rutas deben
+      # permanecer alineadas con el punto de montaje de `bge_cache`.
       BGE_M3_MODEL_ID: ${BGE_M3_MODEL_ID:-BAAI/bge-m3}
       BGE_M3_CACHE_DIR: /home/appuser/.cache/bge-m3
+      # HF_HOME es el directorio padre que contiene a la raíz del hub.
       HF_HOME: /home/appuser/.cache/bge-m3/huggingface
       HF_HUB_CACHE: /home/appuser/.cache/bge-m3/huggingface/hub
-      SENTENCE_TRANSFORMERS_HOME: /home/appuser/.cache/bge-m3/sentence_transformers
+      SENTENCE_TRANSFORMERS_HOME: /home/appuser/.cache/bge-m3/huggingface/hub
+      TRANSFORMERS_CACHE: /home/appuser/.cache/bge-m3/huggingface/hub
       EMBEDDING_DIMENSIONS: "1024"
       BGE_M3_REQUIRED_AT_STARTUP: "False"
       BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000}
