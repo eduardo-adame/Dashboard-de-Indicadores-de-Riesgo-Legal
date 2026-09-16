@@ -1,0 +1,144 @@
+:root {
+  color-scheme: light dark;
+  --bg: #0f172a;
+  --panel: #1e293b;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --ok: #22c55e;
+  --warn: #f59e0b;
+  --err: #ef4444;
+  --idle: #64748b;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.shell {
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+}
+
+.shell__header h1 {
+  margin: 0 0 0.5rem;
+  font-size: 1.6rem;
+  letter-spacing: -0.01em;
+}
+
+.badge {
+  display: inline-block;
+  margin: 0;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--idle);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.card {
+  margin-top: 1.75rem;
+  padding: 1.25rem 1.5rem 1.5rem;
+  background: var(--panel);
+  border: 1px solid #334155;
+  border-radius: 0.75rem;
+}
+
+.card h2 {
+  margin: 0 0 1rem;
+  font-size: 1.05rem;
+}
+
+.card--note p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.status {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.status th,
+.status td {
+  padding: 0.55rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid #334155;
+}
+
+.status thead th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.status tbody tr:last-child th,
+.status tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.pill {
+  display: inline-block;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  background: #0b1220;
+  border: 1px solid currentColor;
+}
+
+.pill--ok {
+  color: var(--ok);
+}
+
+.pill--checking {
+  color: var(--warn);
+}
+
+.pill--unknown {
+  color: var(--idle);
+}
+
+.pill--error,
+.pill--unavailable {
+  color: var(--err);
+}
+
+.action {
+  margin-top: 1rem;
+  padding: 0.45rem 0.9rem;
+  background: #0b1220;
+  color: var(--text);
+  border: 1px solid #475569;
+  border-radius: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.action:hover {
+  border-color: var(--muted);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
