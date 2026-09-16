@@ -26,6 +26,11 @@ Decisiones de diseño que este módulo materializa:
   queda en el sistema de archivos efímero del contenedor, cada recreación provoca
   una descarga completa.
 
+* **Una sola raíz de caché.** La ubicación se gobierna exclusivamente mediante
+  ``HF_HUB_CACHE``; no se pasa ``cache_folder`` a la librería. Ese parámetro
+  prevalecería sobre la variable de entorno y provocaría que el modelo se
+  descargara dos veces dentro del mismo volumen.
+
 Alcance: este módulo no indexa, no persiste vectores y no implementa recuperación.
 """
 from __future__ import annotations
@@ -60,6 +65,7 @@ class EmbeddingServiceStatus:
     cache_dir_is_mount: bool
     load_count: int
     shared_instance: bool
+    cache_root: str = ""
     error: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -69,6 +75,7 @@ class EmbeddingServiceStatus:
             "dimensions": self.dimensions,
             "cache_dir": self.cache_dir,
             "cache_dir_is_mount": self.cache_dir_is_mount,
+            "cache_root": self.cache_root,
             "load_count": self.load_count,
             "shared_instance": self.shared_instance,
             "error": self.error,
@@ -98,6 +105,20 @@ class BgeM3EmbeddingService:
         return self._cache_dir
 
     @property
+    def effective_cache_root(self) -> str:
+        """Raíz efectiva de la caché del modelo (``HF_HUB_CACHE``).
+
+        Es la única ubicación donde la librería busca y descarga el modelo.
+        ``BGE_M3_CACHE_DIR`` es autoritativo y esta raíz se deriva de él, de modo
+        que existe una sola fuente de verdad.
+
+        Se expone para que el procedimiento de limpieza pueda confirmar
+        empíricamente cuál es la raíz funcional en lugar de deducirla por el
+        nombre de un directorio.
+        """
+        return os.path.join(self._cache_dir, "huggingface", "hub")
+
+    @property
     def cache_dir_is_mount(self) -> bool:
         """True si la caché reside en un punto de montaje (volumen persistente)."""
         return os.path.ismount(self._cache_dir)
@@ -121,6 +142,8 @@ class BgeM3EmbeddingService:
 
         Las variables de caché de las librerías de modelos se derivan de
         ``BGE_M3_CACHE_DIR`` y se sobrescriben si apuntaban a otro sitio.
+        ``HF_HUB_CACHE`` es la RAÍZ ÚNICA donde la librería busca y descarga el
+        modelo.
 
         Esto no es cosmético. Si por ejemplo ``HF_HOME`` quedara apuntando al
         sistema de archivos efímero del contenedor, el modelo se re-descargaría
@@ -167,8 +190,14 @@ class BgeM3EmbeddingService:
 
         try:
             self._load_attempts += 1
-            logger.info("Cargando modelo %s desde la caché %s", self._model_id, self._cache_dir)
-            model = SentenceTransformer(self._model_id, cache_folder=self._cache_dir)
+            root = self.effective_cache_root
+            logger.info("Cargando modelo %s desde la caché %s", self._model_id, root)
+            # No se pasa `cache_folder`: ese parámetro prevalecería sobre
+            # HF_HUB_CACHE y haría que la librería descargara en una segunda
+            # ubicación dentro del mismo volumen. La caché se gobierna
+            # exclusivamente por la variable de entorno, que es la única fuente
+            # de verdad y la que apunta al volumen persistente.
+            model = SentenceTransformer(self._model_id)
         except Exception as exc:  # noqa: BLE001 - frontera de dependencia externa
             # Se revierte el contador para no reportar una carga que no ocurrió.
             self._load_attempts = max(0, self._load_attempts - 1)
@@ -256,6 +285,7 @@ class BgeM3EmbeddingService:
             dimensions=self._expected_dimensions if self._model is not None else None,
             cache_dir=self._cache_dir,
             cache_dir_is_mount=self.cache_dir_is_mount,
+            cache_root=self.effective_cache_root,
             load_count=self._load_attempts,
             shared_instance=True,
             error=self._load_error,
@@ -272,6 +302,7 @@ class BgeM3EmbeddingService:
                 dimensions=None,
                 cache_dir=self._cache_dir,
                 cache_dir_is_mount=self.cache_dir_is_mount,
+                cache_root=self.effective_cache_root,
                 load_count=self._load_attempts,
                 shared_instance=True,
                 error=str(exc),
@@ -282,6 +313,7 @@ class BgeM3EmbeddingService:
             dimensions=len(vector),
             cache_dir=self._cache_dir,
             cache_dir_is_mount=self.cache_dir_is_mount,
+            cache_root=self.effective_cache_root,
             load_count=self._load_attempts,
             shared_instance=True,
             error=None,

@@ -68,13 +68,14 @@ def _install_fake_sentence_transformers(
     dimensionalidad, configuración de caché) sin descargar el modelo real, que
     ocupa varios gigabytes.
     """
-    counter = {"instances": 0, "encode_calls": 0}
+    counter = {"instances": 0, "encode_calls": 0, "init_kwargs": []}
 
     class _FakeSentenceTransformer:
-        def __init__(self, model_id: str, cache_folder: str | None = None) -> None:
+        def __init__(self, model_id: str, **kwargs) -> None:
             counter["instances"] += 1
+            counter["init_kwargs"].append(dict(kwargs))
             self.model_id = model_id
-            self.cache_folder = cache_folder
+            self.cache_folder = kwargs.get("cache_folder")
 
         def get_sentence_embedding_dimension(self) -> int:
             return dimension
@@ -217,6 +218,72 @@ def test_cache_env_overrides_stale_inherited_value(
         service.cache_dir, "sentence_transformers"
     )
     assert os.environ["HF_HOME"].startswith(service.cache_dir)
+
+
+@pytest.mark.robustness
+def test_single_cache_root_is_the_hub_cache() -> None:
+    """Existe una sola raíz de caché y es la de `HF_HUB_CACHE`.
+
+    La raíz se deriva de `BGE_M3_CACHE_DIR` y coincide con la variable de entorno
+    que la librería consulta, de modo que no hay dos fuentes de verdad.
+    """
+    service = get_embedding_service()
+    service._configure_cache_env()  # noqa: SLF001 - verificación interna
+
+    expected_root = os.path.join(service.cache_dir, "huggingface", "hub")
+    assert service.effective_cache_root == expected_root
+    assert os.environ["HF_HUB_CACHE"] == expected_root
+    assert service.status().cache_root == expected_root
+
+
+@pytest.mark.robustness
+def test_model_is_loaded_without_redundant_cache_folder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regresión: la carga no debe pasar `cache_folder`.
+
+    Ese parámetro prevalece sobre `HF_HUB_CACHE` y provocaría que el modelo se
+    descargara dos veces dentro del mismo volumen: una en `<caché>/models--...`
+    y otra en `<caché>/huggingface/hub/models--...`.
+    """
+    counter = _install_fake_sentence_transformers(monkeypatch)
+    service = get_embedding_service()
+    service.encode_query("consulta")
+
+    assert counter["instances"] == 1
+    kwargs = counter["init_kwargs"][0]
+    assert "cache_folder" not in kwargs, (
+        "no debe pasarse cache_folder: HF_HUB_CACHE es la única fuente de verdad"
+    )
+    assert kwargs == {}, f"no se esperaban argumentos adicionales: {kwargs}"
+
+
+@pytest.mark.robustness
+def test_no_duplicate_cache_root_is_materialized() -> None:
+    """Regresión estructural: no debe existir una segunda raíz de caché.
+
+    La ubicación redundante era `<cache_dir>/models--<org>--<modelo>`, creada por
+    el parámetro `cache_folder`. Solo debe existir la raíz gobernada por
+    `HF_HUB_CACHE`, que es la que la librería consulta.
+
+    La comprobación es estructural: las subcarpetas de la raíz las crea la propia
+    librería al descargar, no este servicio, por lo que aquí solo se verifica que
+    no aparezca la ubicación duplicada y que la raíz efectiva quede dentro de la
+    caché persistente.
+    """
+    service = get_embedding_service()
+    service._configure_cache_env()  # noqa: SLF001 - verificación interna
+
+    redundant = list(Path(service.cache_dir).glob("models--*"))
+    assert not redundant, f"raíz de caché duplicada detectada: {redundant}"
+
+    root = service.effective_cache_root
+    assert root.startswith(service.cache_dir), (
+        "la raíz efectiva debe quedar dentro de la caché persistente"
+    )
+    assert root == os.environ["HF_HUB_CACHE"], (
+        "la raíz efectiva debe ser exactamente HF_HUB_CACHE"
+    )
 
 
 @pytest.mark.robustness
