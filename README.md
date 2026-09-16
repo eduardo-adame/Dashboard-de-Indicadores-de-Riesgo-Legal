@@ -42,8 +42,8 @@ Software necesario: Docker Engine + Docker Compose v2, Python ≥3.10 (para los 
 tests) y Node 22 (solo si se desarrolla el frontend fuera del contenedor).
 
 > **Equipos por debajo de la referencia:** el stack arranca, pero la carga del
-> modelo de embeddings (~2.3 GB de descarga y ~1.3 GB de memoria) puede no ser
-> viable. Ver sección 7.
+> modelo de embeddings (~4.3 GB de caché y ~1.3 GB de memoria al cargarlo) puede no
+> ser viable. Ver sección 7.
 
 ---
 
@@ -103,7 +103,7 @@ docker compose --profile airflow ps
 # Detener (CONSERVA volúmenes: no re-descarga el modelo)
 docker compose --profile airflow down
 
-# Detener y DESTRUIR volúmenes (implica re-descargar el modelo, ~2.3 GB)
+# Detener y DESTRUIR volúmenes (implica volver a descargar el snapshot, ~4.3 GB)
 docker compose --profile airflow down -v
 ```
 
@@ -206,10 +206,35 @@ Comprobación de capacidad:
 curl -X POST http://localhost:8000/health/embeddings/probe
 ```
 
-> **Coste:** la primera invocación descarga ~2.3 GB en el volumen y consume ~1.3 GB
-> de memoria. En equipos por debajo de la configuración de referencia esta
-> comprobación puede no ser viable y debe reportarse como evidencia pendiente, no
-> como un fallo del sistema.
+> **Coste de la primera descarga.** El modelo se descarga en el volumen persistente
+> la primera vez que se invoca la comprobación. Conviene distinguir tres magnitudes
+> que no son intercambiables:
+>
+> | Magnitud | Valor medido | Qué representa |
+> |---|---|---|
+> | Artefacto de pesos | ~2.2 GB | Un único juego de pesos |
+> | Huella total de la caché | ~4.3 GB | Todo lo que la librería descarga del repositorio |
+> | Memoria durante la carga | ~1.3 GB | Residentes en el proceso al cargar el modelo |
+>
+> Los ~4.3 GB **no describen al modelo**: describen lo que la librería deja en el
+> volumen. El repositorio publica los pesos en **dos formatos**
+> (`pytorch_model.bin` y `model.safetensors`, ~2.2 GB cada uno) y la librería
+> descarga ambos al resolver el directorio raíz del snapshot.
+>
+> Conservar un único formato no es una optimización estable: si se elimina el
+> segundo, la librería lo vuelve a descargar en el siguiente arranque. Por eso la
+> huella de referencia es ~4.3 GB y no se documenta una cifra menor.
+>
+> **No pre-poblar la caché con una descarga del repositorio completo.** Hacerlo
+> añade artefactos que el servicio nunca utiliza (exportación ONNX, imágenes de
+> documentación, pesos de las variantes sparse y colbert) y eleva la huella muy por
+> encima de esos ~4.3 GB. Basta con dejar que la librería pueble la caché por sí
+> misma.
+>
+> BGE-M3 se carga desde **una raíz única** de caché, gobernada por `HF_HUB_CACHE` y
+> alineada con `SENTENCE_TRANSFORMERS_HOME` y `TRANSFORMERS_CACHE`. Si esas
+> variables apuntaran a directorios distintos, el modelo se descargaría por
+> duplicado dentro del mismo volumen.
 
 ---
 

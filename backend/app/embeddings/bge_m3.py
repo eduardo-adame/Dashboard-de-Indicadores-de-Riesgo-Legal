@@ -31,6 +31,14 @@ Decisiones de diseño que este módulo materializa:
   prevalecería sobre la variable de entorno y provocaría que el modelo se
   descargara dos veces dentro del mismo volumen.
 
+* **La caché la puebla la librería, no una descarga manual del repositorio.**
+  Debe evitarse pre-poblar la caché con una descarga del snapshot completo: eso
+  añade artefactos que el servicio nunca utiliza (exportación ONNX, imágenes de
+  documentación, pesos de las variantes sparse y colbert) y dispara la huella muy
+  por encima de lo necesario. La librería descarga por sí misma solo lo que
+  resuelve: el directorio raíz del snapshot y los módulos declarados en
+  `modules.json`.
+
 Alcance: este módulo no indexa, no persiste vectores y no implementa recuperación.
 """
 from __future__ import annotations
