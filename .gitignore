@@ -1,0 +1,189 @@
+# ==============================================================================
+# .gitignore — repositorio del producto
+#
+# Regla de seguridad principal:
+#   .env.example  → versionado, solo placeholders
+#   .env          → local, nunca versionado
+#   Ningún secreto real entra al repositorio.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. SECRETOS Y CONFIGURACIÓN LOCAL DE ENTORNO
+# ------------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+secrets/
+secrets.*
+*secret*.json
+*credentials*.json
+serviceAccount*.json
+.htpasswd
+
+# ------------------------------------------------------------------------------
+# 2. PYTHON (backend)
+# ------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Test / coverage / type checkers
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+.cache/
+nosetests.xml
+
+# ------------------------------------------------------------------------------
+# 3. BGE-M3 / CACHE DE MODELOS Y ARTEFACTOS BINARIOS PESADOS
+#    La caché del modelo vive en un volumen Docker nombrado, nunca en el repo.
+# ------------------------------------------------------------------------------
+models/
+model_cache/
+bge_cache/
+bge-m3/
+.cache/huggingface/
+.huggingface/
+*.bin
+*.safetensors
+*.onnx
+*.pt
+*.pth
+*.ckpt
+*.gguf
+*.h5
+*.msgpack
+sentencepiece.bpe.model
+
+# ------------------------------------------------------------------------------
+# 4. NODE / FRONTEND
+# ------------------------------------------------------------------------------
+node_modules/
+jspm_packages/
+.npm/
+.yarn/
+.yarn-integrity
+.pnp.*
+bower_components/
+.next/
+.nuxt/
+.svelte-kit/
+.vite/
+.turbo/
+.parcel-cache/
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
+frontend/dist/
+frontend/build/
+frontend/coverage/
+
+# ------------------------------------------------------------------------------
+# 5. AIRFLOW
+#    Los metadatos SQLite y los logs persisten en volúmenes Docker dedicados.
+# ------------------------------------------------------------------------------
+airflow/logs/
+airflow/dags/__pycache__/
+airflow/webserver_config.py
+airflow/airflow-webserver.pid
+airflow/airflow.db
+airflow/*.db
+*.sqlite
+*.sqlite3
+*.db
+
+# ------------------------------------------------------------------------------
+# 6. POSTGRESQL / DATOS LOCALES
+#    Ningún dato de aplicación ni dump se versiona.
+# ------------------------------------------------------------------------------
+pgdata/
+postgres-data/
+*.sql.gz
+*.dump
+data/local/
+tmp/
+
+# ------------------------------------------------------------------------------
+# 7. DOCKER / VOLÚMENES LOCALES
+# ------------------------------------------------------------------------------
+docker-volumes/
+volumes/
+*.pid
+
+# ------------------------------------------------------------------------------
+# 8. IDEs, EDITORES Y SISTEMA OPERATIVO
+# ------------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ------------------------------------------------------------------------------
+# 9. LOGS, TEMPORALES Y ARTEFACTOS DE EJECUCIÓN
+# ------------------------------------------------------------------------------
+*.log
+logs/
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*~
+.tmp/
+.temp/
