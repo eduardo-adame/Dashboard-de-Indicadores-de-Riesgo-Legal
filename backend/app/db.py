@@ -3,7 +3,7 @@
 Este módulo NO crea tablas, esquemas, tipos ni migraciones, y tampoco habilita
 permanentemente la extensión `vector`. La instalación de la extensión y la
 definición del modelo de datos son responsabilidad de las migraciones de la
-aplicación, que se ejecutan en una etapa posterior y separada del arranque.
+aplicación, que se aplican en una etapa explícita y separada del arranque.
 
 Comprobar la capacidad vectorial dentro de una transacción revertida permite
 validar que la imagen de base de datos es apta sin dejar rastro alguno.
@@ -33,7 +33,7 @@ class DatabaseStatus:
       (``pg_extension``). Permanecerá en ``False`` hasta que las migraciones la
       habiliten, por lo que no debe tratarse como un fallo del arranque.
     * ``vector_1024_accepted`` — el tipo vector acepta 1.024 dimensiones; solo es
-      evaluable si la extensión está habilitada.
+      evaluable si la extensión está habilitada mediante migraciones.
 
     ``healthy`` expresa la readiness del servicio: que alcance la base de datos.
     No exige la extensión habilitada, porque una base de datos recién creada
@@ -68,7 +68,7 @@ class DatabaseStatus:
         if self.reachable and not self.pgvector_installed:
             payload["note"] = (
                 "pgvector está disponible en la imagen pero todavía no habilitado en la base; "
-                "su habilitación corresponde a las migraciones de la aplicación."
+                "su habilitación requiere aplicar las migraciones de la aplicación."
             )
         return payload
 

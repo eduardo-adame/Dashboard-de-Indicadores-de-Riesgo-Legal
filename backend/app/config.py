@@ -25,7 +25,8 @@ class Settings(BaseSettings):
 
     # --- Persistencia (PostgreSQL + pgvector) ------------------------------
     # Se usa para comprobar conectividad y disponibilidad de la extensión
-    # vectorial. Esta aplicación no define ni migra el esquema de datos.
+    # vectorial. El arranque de la API no ejecuta migraciones automáticamente;
+    # el esquema se administra de forma explícita mediante Alembic.
     postgres_host: str = "postgres"
     postgres_port: int = 5432
     postgres_user: str = "app"
