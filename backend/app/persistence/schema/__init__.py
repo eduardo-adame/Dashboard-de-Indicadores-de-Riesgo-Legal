@@ -10,6 +10,7 @@ ALEMBIC_REVISIONS = (
     "0003_documents_corpus",
     "0004_analytics_rag_jobs",
     "0005_security_audit_grants",
+    "0006_security_priv",
 )
 
 RAG_STATES = (
