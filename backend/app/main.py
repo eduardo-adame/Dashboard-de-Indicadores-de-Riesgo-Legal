@@ -1,7 +1,7 @@
 """Aplicación FastAPI del backend.
 
-Esta aplicación expone únicamente comprobaciones de salud y de capacidad del
-modelo de embeddings. No implementa lógica de negocio.
+Esta aplicación expone comprobaciones de salud, capacidad del modelo de
+embeddings y operaciones protegidas de seguridad.
 
 Las rutas y los códigos de estado definidos aquí son una decisión de diseño de
 este servicio. Su finalidad es permitir que un orquestador de contenedores y un
@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 from app.config import get_settings
 from app.db import check_database
 from app.embeddings import EmbeddingUnavailableError, get_embedding_service
+from app.security.api import router as security_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,15 +62,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS con orígenes explícitos. El servicio aún no implementa autenticación, por
-# lo que tampoco se habilitan credenciales en peticiones cross-origin.
+# CORS conserva orígenes explícitos y habilita credenciales solo para la cookie
+# de refresh; el token de acceso se presenta mediante Authorization Bearer.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origin_list,
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PATCH", "PUT"],
+    allow_headers=["Content-Type", "Authorization"],
 )
+
+app.include_router(security_router)
 
 
 @app.get("/health", tags=["health"])

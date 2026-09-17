@@ -5,8 +5,10 @@ secretos: las credenciales reales viven en el archivo `.env`, excluido de Git.
 """
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,10 +52,48 @@ class Settings(BaseSettings):
     # riesgo innecesario.
     backend_cors_origins: str = "http://localhost:3000"
 
+    # --- Autenticación y sesiones -----------------------------------------
+    # El keyring se recibe como objeto JSON ``{\"kid\": \"secreto-base64url\"}``.
+    # No hay una clave de reserva en código: un entorno que atienda usuarios
+    # debe aportar su material criptográfico mediante configuración protegida.
+    security_jwt_issuer: str = "riesgo-legal-backend"
+    security_jwt_audience: str = "riesgo-legal-web"
+    security_jwt_keyring_json: str = "{}"
+    security_jwt_active_kid: str = ""
+    security_refresh_cookie_name: str = "riesgo_legal_refresh"
+    security_refresh_cookie_secure: bool | None = None
+
+    @field_validator("security_jwt_keyring_json")
+    @classmethod
+    def validate_keyring_json(cls, value: str) -> str:
+        """Comprueba que el formato de configuración no sea ambiguo."""
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("SECURITY_JWT_KEYRING_JSON debe ser JSON válido") from exc
+        if not isinstance(parsed, dict) or not all(
+            isinstance(kid, str) and isinstance(secret, str)
+            for kid, secret in parsed.items()
+        ):
+            raise ValueError("SECURITY_JWT_KEYRING_JSON debe ser un objeto de claves de texto")
+        return value
+
     @property
     def cors_origin_list(self) -> list[str]:
         """Lista de orígenes CORS a partir de la cadena separada por comas."""
         return [origin.strip() for origin in self.backend_cors_origins.split(",") if origin.strip()]
+
+    @property
+    def jwt_keyring(self) -> dict[str, str]:
+        """Devuelve únicamente claves configuradas localmente."""
+        return dict(json.loads(self.security_jwt_keyring_json))
+
+    @property
+    def refresh_cookie_secure(self) -> bool:
+        """Exige la marca Secure fuera del entorno de desarrollo."""
+        if self.security_refresh_cookie_secure is not None:
+            return self.security_refresh_cookie_secure
+        return self.environment.lower() != "development"
 
     @property
     def sqlalchemy_style_dsn(self) -> str:
