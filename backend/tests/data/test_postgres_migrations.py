@@ -24,6 +24,7 @@ REVISIONS = (
     "0003_documents_corpus",
     "0004_analytics_rag_jobs",
     "0005_security_audit_grants",
+    "0006_security_priv",
 )
 
 
@@ -73,6 +74,7 @@ def test_every_revision_is_valid_and_round_trips(migrated_database: tuple[sa.Eng
         "0003_documents_corpus": {"document", "document_version", "document_chunk", "chunk_term"},
         "0004_analytics_rag_jobs": {"analytic_run", "kpi_observation", "rag_operation", "rag_final_fragment"},
         "0005_security_audit_grants": {"user_account", "access_session", "document_exception"},
+        "0006_security_priv": {"user_account", "access_session", "document_exception"},
     }
     previous = "base"
     for revision in REVISIONS:

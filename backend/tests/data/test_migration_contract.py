@@ -22,6 +22,8 @@ def test_runtime_is_python_312_and_pins_are_resolved() -> None:
     assert version("alembic") == "1.20.0"
     assert version("pgvector") == "0.5.0"
     assert version("psycopg") == "3.2.3"
+    assert version("PyJWT") == "2.10.1"
+    assert version("pwdlib") == "0.2.1"
 
 
 @pytest.mark.data_schema
@@ -35,6 +37,7 @@ def test_revision_chain_is_linear_and_complete() -> None:
         "0003_documents_corpus",
         "0004_analytics_rag_jobs",
         "0005_security_audit_grants",
+        "0006_security_priv",
     ]
     assert len(script.get_heads()) == 1
 
@@ -55,6 +58,7 @@ def test_offline_upgrade_and_downgrade_compile() -> None:
     assert "vector(1024)" in sql
     assert "using hnsw" in sql
     assert "create table audit.event" in sql
+    assert "riesgo_legal_migration_owner" in sql
 
     downgrade = subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), "downgrade", "head:base", "--sql"],

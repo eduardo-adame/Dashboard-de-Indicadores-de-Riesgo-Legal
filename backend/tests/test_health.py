@@ -38,8 +38,8 @@ def test_health_does_not_expose_secrets(client: TestClient) -> None:
 
 
 @pytest.mark.robustness
-def test_health_does_not_expose_business_routes() -> None:
-    """El servicio base no expone rutas de negocio."""
+def test_health_does_not_expose_unrelated_business_routes() -> None:
+    """Salud no habilita módulos de dominio fuera de seguridad."""
     routes = {getattr(route, "path", "") for route in app.routes}
     business_prefixes = (
         "/ingesta",
@@ -49,7 +49,6 @@ def test_health_does_not_expose_business_routes() -> None:
         "/analisis",
         "/busqueda",
         "/rag",
-        "/auth",
         "/usuarios",
         "/roles",
         "/auditoria",
