@@ -65,6 +65,20 @@ class SecurityService:
             self._require(current, capability)
         return current
 
+    def revalidate_functional_access(
+        self,
+        connection,
+        principal: AuthenticatedPrincipal,
+        capability: str,
+    ) -> AuthenticatedPrincipal:
+        """Revalida acceso funcional usando la transacción abierta del consumidor.
+
+        La persona consumidora conserva la frontera de transacción y debe registrar
+        mediante Audit cualquier denegación aplicable antes de devolver el error
+        seguro. Esta operación no abre, confirma ni revierte una transacción.
+        """
+        return self._authoritative_principal(connection, principal, capability)
+
     def _invalidate_accounts(self, connection, actor: AuthenticatedPrincipal, account_ids: list[UUID], correlation: UUID) -> None:
         """Invalida sesiones y deja un evento minimizado por cada sesión afectada."""
         for session_id in self.repository.invalidate_sessions(connection, account_ids):

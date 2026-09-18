@@ -7,6 +7,7 @@ from app.security.models import (
     DocumentAuthorizationDecision,
     FunctionalAuthorizationDecision,
 )
+from app.security.service import SecurityService
 
 __all__ = (
     "AuthenticatedPrincipal",
@@ -14,4 +15,5 @@ __all__ = (
     "AuthorizedDocumentScope",
     "DocumentAuthorizationDecision",
     "FunctionalAuthorizationDecision",
+    "SecurityService",
 )

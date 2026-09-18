@@ -5,11 +5,13 @@ from contextlib import contextmanager
 from uuid import uuid4
 
 from alembic import command
+import psycopg
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.engine import make_url
+from psycopg.rows import dict_row
 
-from app.security.models import AuthorizationContext, DocumentAuthorizationResult
+from app.security.models import AuthenticationError, AuthorizationContext, DocumentAuthorizationResult
 from app.security.repository import SecurityRepository
 from app.security.service import SecurityService
 from app.security.tokens import JwtService
@@ -74,3 +76,89 @@ def test_postgres_audit_failure_rolls_back_security_mutation(security_database, 
     with engine.connect() as connection:
         assert connection.execute(sa.text("SELECT count(*) FROM app.user_account WHERE username = 'rollback-user'")).scalar_one() == 0
         assert connection.execute(sa.text("SELECT count(*) FROM audit.event WHERE resource_identifier = 'rollback-user'")).scalar_one() == 0
+
+
+@pytest.mark.requires_db
+@pytest.mark.contract
+def test_transactional_revalidation_and_required_audit_share_one_database_transaction(security_database, monkeypatch) -> None:
+    engine, conninfo = security_database; service = _service(conninfo); _, principal = _seed_actor(engine, service)
+    target_id = uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text("INSERT INTO app.user_account (id, username, display_name, password_hash) VALUES (:id, :username, 'Target', :hash)"),
+            {"id": target_id, "username": f"target-{target_id.hex}", "hash": service.passwords.hash("contraseña válida 123")},
+        )
+
+    def fail_audit(*args, **kwargs):
+        raise RuntimeError("controlled audit failure")
+
+    monkeypatch.setattr(service.repository, "write_audit_event", fail_audit)
+    with pytest.raises(RuntimeError, match="controlled audit failure"):
+        with service.repository.transaction() as connection:
+            current = service.revalidate_functional_access(connection, principal, "user.update")
+            assert current.account_id == principal.account_id
+            assert service.repository.update_account(connection, target_id, "Changed")
+            service.repository.write_audit_event(
+                connection,
+                actor=current,
+                action="PROTECTED_MUTATION",
+                resource_type="USER",
+                resource_identifier=str(target_id),
+                result="SUCCESS",
+                correlation_id=uuid4(),
+            )
+
+    with engine.connect() as connection:
+        assert connection.execute(
+            sa.text("SELECT display_name FROM app.user_account WHERE id = :id"), {"id": target_id}
+        ).scalar_one() == "Target"
+
+
+@pytest.mark.requires_db
+@pytest.mark.contract
+def test_transactional_revalidation_serializes_revocation_before_a_later_mutation(security_database) -> None:
+    engine, conninfo = security_database; service = _service(conninfo); account_id, principal = _seed_actor(engine, service)
+
+    with service.repository.transaction() as protected_connection:
+        service.revalidate_functional_access(protected_connection, principal, "user.update")
+        with psycopg.connect(conninfo, row_factory=dict_row) as revocation_connection:
+            with revocation_connection.transaction():
+                revocation_connection.execute("SET LOCAL lock_timeout = '200ms'")
+                with pytest.raises(psycopg.errors.LockNotAvailable):
+                    service.repository.invalidate_sessions(revocation_connection, [account_id])
+
+    with service.repository.transaction() as revocation_connection:
+        service.repository.invalidate_sessions(revocation_connection, [account_id])
+
+    with service.repository.transaction() as later_connection:
+        with pytest.raises(AuthenticationError):
+            service.revalidate_functional_access(later_connection, principal, "user.update")
+
+
+@pytest.mark.requires_db
+@pytest.mark.contract
+def test_transactional_denial_is_audited_without_confirming_a_mutation(security_database) -> None:
+    engine, conninfo = security_database; service = _service(conninfo); account_id, principal = _seed_actor(engine, service)
+
+    with service.repository.transaction() as revocation_connection:
+        service.repository.invalidate_sessions(revocation_connection, [account_id])
+
+    with service.repository.transaction() as connection:
+        with pytest.raises(AuthenticationError):
+            service.revalidate_functional_access(connection, principal, "user.update")
+        service.repository.write_audit_event(
+            connection,
+            actor=principal,
+            action="AUTHORIZATION_DENIED",
+            resource_type="CAPABILITY",
+            resource_identifier="user.update",
+            result="DENIED",
+            correlation_id=uuid4(),
+            safe_cause_code="INVALID_SESSION",
+        )
+
+    with engine.connect() as connection:
+        assert connection.execute(
+            sa.text("SELECT count(*) FROM audit.event WHERE action = 'AUTHORIZATION_DENIED' AND actor_user_id = :id"),
+            {"id": account_id},
+        ).scalar_one() == 1

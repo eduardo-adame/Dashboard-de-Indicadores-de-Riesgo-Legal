@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.security.models import AuthenticatedPrincipal, AuthenticationError
+from app.security.models import AuthenticatedPrincipal, AuthenticationError, AuthorizationError
 from app.security.service import SecurityService
 from app.security.tokens import JwtService
 
@@ -17,12 +17,16 @@ class RepositoryStub:
         self.current = current
         self.created = False
         self.audit_actions: list[str] = []
+        self.transaction_calls = 0
+        self.connections: list[object] = []
 
     @contextmanager
     def transaction(self):
+        self.transaction_calls += 1
         yield self
 
     def principal_for_session(self, connection, account_id, session_id, authorization_version):
+        self.connections.append(connection)
         return self.current
 
     def create_account(self, connection, **kwargs):
@@ -89,3 +93,50 @@ def test_invalid_token_is_audited_with_a_safe_category() -> None:
     with pytest.raises(AuthenticationError):
         service(repository).authenticated_principal("not-a-jwt")
     assert repository.audit_actions == ["AUTH_TOKEN_VALIDATION"]
+
+
+@pytest.mark.contract
+def test_transactional_revalidation_uses_the_callers_connection_and_current_principal() -> None:
+    actor = principal()
+    current = AuthenticatedPrincipal(
+        actor.account_id,
+        actor.session_id,
+        actor.username,
+        actor.authorization_version,
+        frozenset({"ANALISTA"}),
+        frozenset({"ingest.upload"}),
+    )
+    repository = RepositoryStub(current)
+    connection = object()
+
+    result = service(repository).revalidate_functional_access(
+        connection, actor, "ingest.upload"
+    )
+
+    assert result is current
+    assert repository.connections == [connection]
+    assert repository.transaction_calls == 0
+
+
+@pytest.mark.contract
+def test_transactional_revalidation_rejects_revoked_or_removed_permission() -> None:
+    actor = principal()
+    connection = object()
+
+    with pytest.raises(AuthenticationError):
+        service(RepositoryStub(None)).revalidate_functional_access(
+            connection, actor, "ingest.upload"
+        )
+
+    current_without_permission = AuthenticatedPrincipal(
+        actor.account_id,
+        actor.session_id,
+        actor.username,
+        actor.authorization_version,
+        frozenset({"JURIDICO"}),
+        frozenset({"document.query"}),
+    )
+    with pytest.raises(AuthorizationError):
+        service(RepositoryStub(current_without_permission)).revalidate_functional_access(
+            connection, actor, "ingest.upload"
+        )
