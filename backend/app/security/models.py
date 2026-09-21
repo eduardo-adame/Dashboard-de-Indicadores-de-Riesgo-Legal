@@ -45,14 +45,14 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     "ANALISTA": frozenset({
         "dashboard.read", "kpi.read", "document.query", "ingest.upload",
         "ingest.execute", "quarantine.read", "quarantine.reinject",
-        "quarantine.discard", "audit.read.own",
+        "quarantine.discard", "audit.read.own", "document.manage",
     }),
     "TI": frozenset({
         "dashboard.read", "kpi.read", "document.query", "ingest.upload",
         "ingest.execute", "quarantine.read", "quarantine.reinject",
         "quarantine.discard", "audit.read.own", "audit.read.all", "user.create",
         "user.update", "user.disable", "user.reset_access", "role.assign",
-        "document_acl.manage", "technical_config.manage",
+        "document_acl.manage", "technical_config.manage", "document.manage",
     }),
 }
 
