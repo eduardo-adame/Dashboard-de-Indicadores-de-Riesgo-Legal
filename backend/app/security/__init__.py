@@ -4,6 +4,8 @@ from app.security.models import (
     AuthenticatedPrincipal,
     AuthorizationContext,
     AuthorizedDocumentScope,
+    BootstrapAlreadyCompletedError,
+    BootstrapError,
     DocumentAuthorizationDecision,
     FunctionalAuthorizationDecision,
 )
@@ -13,6 +15,8 @@ __all__ = (
     "AuthenticatedPrincipal",
     "AuthorizationContext",
     "AuthorizedDocumentScope",
+    "BootstrapAlreadyCompletedError",
+    "BootstrapError",
     "DocumentAuthorizationDecision",
     "FunctionalAuthorizationDecision",
     "SecurityService",

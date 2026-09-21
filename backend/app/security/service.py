@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 from app.security.models import (
     AuthenticatedPrincipal,
     AuthenticationError,
+    BootstrapAlreadyCompletedError,
     AuthorizationContext,
     AuthorizationError,
     AuthorizedDocumentScope,
@@ -27,10 +28,16 @@ from app.security.tokens import JwtService
 class SecurityService:
     """Coordina persistencia y decisiones de seguridad vigentes."""
 
-    def __init__(self, repository: SecurityRepository, jwt_service: JwtService, password_service: PasswordService | None = None) -> None:
+    def __init__(self, repository: SecurityRepository, jwt_service: JwtService | None = None, password_service: PasswordService | None = None) -> None:
         self.repository = repository
         self.jwt_service = jwt_service
         self.passwords = password_service or PasswordService()
+
+    def _jwt(self) -> JwtService:
+        """Obtiene la configuración JWT solo para operaciones que la requieren."""
+        if self.jwt_service is None:
+            raise AuthenticationError("Credenciales o sesión no válidas")
+        return self.jwt_service
 
     @staticmethod
     def _refresh_token() -> str:
@@ -87,6 +94,56 @@ class SecurityService:
                 resource_identifier=str(session_id), result="SUCCESS", correlation_id=correlation,
             )
 
+    @staticmethod
+    def _validate_account_input(username: str, display_name: str, roles: frozenset[str]) -> tuple[str, str]:
+        normalized_username = username.strip()
+        normalized_display_name = display_name.strip()
+        if not normalized_username or not normalized_display_name or not roles or not roles.issubset(KNOWN_ROLES):
+            raise ValidationError("Datos de cuenta no válidos")
+        return normalized_username, normalized_display_name
+
+    def bootstrap_first_ti(
+        self,
+        *,
+        username: str,
+        password: str,
+        display_name: str | None = None,
+        correlation_id: UUID | None = None,
+    ) -> UUID:
+        """Crea una única identidad TI inicial mediante una acción local explícita.
+
+        No sustituye la administración normal: tras crear una TI activa, cualquier
+        nueva invocación falla antes de modificar cuentas, roles o contraseñas.
+        """
+        normalized_username, normalized_display_name = self._validate_account_input(
+            username, display_name or username, frozenset({"TI"})
+        )
+        password_hash = self.passwords.hash(password)
+        correlation = correlation_id or uuid4()
+        with self.repository.transaction() as connection:
+            self.repository.acquire_initial_admin_lock(connection)
+            if self.repository.has_active_ti_account(connection):
+                raise BootstrapAlreadyCompletedError("BOOTSTRAP_ALREADY_COMPLETED")
+            account_id = self.repository.create_account(
+                connection,
+                username=normalized_username,
+                display_name=normalized_display_name,
+                password_hash=password_hash,
+            )
+            self.repository.set_roles(connection, account_id, frozenset({"TI"}))
+            self.repository.write_audit_event(
+                connection,
+                actor=None,
+                action="SECURITY_BOOTSTRAP",
+                resource_type="USER",
+                resource_identifier=str(account_id),
+                result="SUCCESS",
+                correlation_id=correlation,
+                safe_cause_code="INITIAL_ADMINISTRATION",
+                process_identifier="security-bootstrap",
+            )
+            return account_id
+
     def login(self, username: str, password: str, correlation_id: UUID | None = None) -> tuple[str, str]:
         """Crea una sesión absoluta y devuelve access JWT más refresh opaco."""
         correlation = correlation_id or uuid4()
@@ -114,7 +171,7 @@ class SecurityService:
                 roles, permissions = self.repository._roles_and_permissions(connection, account_id)
                 principal = AuthenticatedPrincipal(account_id, session_id, str(account["username"]), authorization_version, roles, permissions)
                 self.repository.write_audit_event(connection, actor=principal, action="AUTH_LOGIN", resource_type="SESSION", resource_identifier=str(session_id), result="SUCCESS", correlation_id=correlation)
-                result = (self.jwt_service.issue(account_id=account_id, session_id=session_id, authorization_version=authorization_version), refresh_token)
+                result = (self._jwt().issue(account_id=account_id, session_id=session_id, authorization_version=authorization_version), refresh_token)
         if denied or result is None:
             raise AuthenticationError("Credenciales o sesión no válidas")
         return result
@@ -147,7 +204,7 @@ class SecurityService:
                     denied = True
                 else:
                     self.repository.write_audit_event(connection, actor=principal, action="AUTH_REFRESH", resource_type="SESSION", resource_identifier=str(principal.session_id), result="SUCCESS", correlation_id=correlation)
-                    result = (self.jwt_service.issue(account_id=principal.account_id, session_id=principal.session_id, authorization_version=principal.authorization_version), replacement)
+                    result = (self._jwt().issue(account_id=principal.account_id, session_id=principal.session_id, authorization_version=principal.authorization_version), replacement)
         if denied or result is None:
             raise AuthenticationError("Credenciales o sesión no válidas")
         return result
@@ -155,7 +212,7 @@ class SecurityService:
     def authenticated_principal(self, access_token: str) -> AuthenticatedPrincipal:
         """Valida JWT y estado persistido en cada petición protegida."""
         try:
-            claims = self.jwt_service.decode(access_token)
+            claims = self._jwt().decode(access_token)
         except AuthenticationError:
             with self.repository.transaction() as connection:
                 self.repository.write_audit_event(
@@ -211,13 +268,12 @@ class SecurityService:
 
     def create_account(self, actor: AuthenticatedPrincipal, *, username: str, display_name: str, password: str, roles: frozenset[str], correlation_id: UUID | None = None) -> UUID:
         self._require(actor, "user.create")
-        if not username.strip() or not display_name.strip() or not roles or not roles.issubset(KNOWN_ROLES):
-            raise ValidationError("Datos de cuenta no válidos")
+        username, display_name = self._validate_account_input(username, display_name, roles)
         correlation = correlation_id or uuid4()
         with self.repository.transaction() as connection:
             actor = self._authoritative_principal(connection, actor, "user.create")
             account_id = self.repository.create_account(
-                connection, username=username.strip(), display_name=display_name.strip(), password_hash=self.passwords.hash(password)
+                connection, username=username, display_name=display_name, password_hash=self.passwords.hash(password)
             )
             self.repository.set_roles(connection, account_id, roles)
             self.repository.write_audit_event(

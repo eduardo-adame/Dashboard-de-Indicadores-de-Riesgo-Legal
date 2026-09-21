@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     security_jwt_active_kid: str = ""
     security_refresh_cookie_name: str = "riesgo_legal_refresh"
     security_refresh_cookie_secure: bool | None = None
+    security_bootstrap_enabled: bool = False
+    security_bootstrap_username: str | None = None
+    security_bootstrap_password: str | None = None
 
     @field_validator("security_jwt_keyring_json")
     @classmethod

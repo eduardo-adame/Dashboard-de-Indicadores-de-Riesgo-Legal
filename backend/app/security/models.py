@@ -26,6 +26,14 @@ class AuditPersistenceError(SecurityError):
     """Una operación auditable no pudo confirmar su evento."""
 
 
+class BootstrapError(SecurityError):
+    """El aprovisionamiento inicial no puede continuar de forma segura."""
+
+
+class BootstrapAlreadyCompletedError(BootstrapError):
+    """Ya existe una identidad TI activa que administra normalmente el sistema."""
+
+
 class DocumentAuthorizationResult(StrEnum):
     PERMIT = "PERMIT"
     EXPLICIT_DENY = "EXPLICIT_DENY"

@@ -180,6 +180,26 @@ class SecurityRepository:
             return [row["user_id"] for row in cursor.fetchall()]
 
     @staticmethod
+    def acquire_initial_admin_lock(connection: psycopg.Connection) -> None:
+        """Serializa el aprovisionamiento de la primera identidad administrativa."""
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(hashtext('security.initial_admin_bootstrap'))")
+
+    @staticmethod
+    def has_active_ti_account(connection: psycopg.Connection) -> bool:
+        """Indica si ya existe una identidad TI capaz de administrar normalmente."""
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT EXISTS(
+                       SELECT 1
+                       FROM app.user_role ur
+                       JOIN app.user_account u ON u.id = ur.user_id
+                       WHERE ur.role_id = 'TI' AND ur.active AND u.state = 'ACTIVE'
+                   )"""
+            )
+            return bool(cursor.fetchone()["exists"])
+
+    @staticmethod
     def create_account(connection: psycopg.Connection, *, username: str, display_name: str, password_hash: str) -> UUID:
         account_id = uuid4()
         with connection.cursor() as cursor:
@@ -324,7 +344,13 @@ class SecurityRepository:
         return decisions, families, set()
 
     @staticmethod
-    def write_audit_event(connection: psycopg.Connection, *, actor: AuthenticatedPrincipal | None, action: str, resource_type: str, resource_identifier: str | None, result: str, correlation_id: UUID, safe_cause_code: str | None = None) -> None:
+    def write_audit_event(connection: psycopg.Connection, *, actor: AuthenticatedPrincipal | None, action: str, resource_type: str, resource_identifier: str | None, result: str, correlation_id: UUID, safe_cause_code: str | None = None, process_identifier: str | None = None) -> None:
+        if actor is not None:
+            actor_type, actor_identifier, actor_user_id = "HUMAN", actor.username, actor.account_id
+        elif process_identifier:
+            actor_type, actor_identifier, actor_user_id = "PROCESS", process_identifier, None
+        else:
+            actor_type, actor_identifier, actor_user_id = "ANONYMOUS", "anonymous", None
         with connection.cursor() as cursor:
             cursor.execute(
                 """INSERT INTO audit.event
@@ -332,8 +358,7 @@ class SecurityRepository:
                     resource_identifier, result, safe_cause_code, operation_id, correlation_id)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
-                    uuid4(), "HUMAN" if actor else "ANONYMOUS",
-                    actor.username if actor else "anonymous", actor.account_id if actor else None,
+                    uuid4(), actor_type, actor_identifier, actor_user_id,
                     action, resource_type, resource_identifier, result, safe_cause_code,
                     uuid4(), correlation_id,
                 ),

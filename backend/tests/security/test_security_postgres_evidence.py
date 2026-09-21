@@ -1,24 +1,27 @@
 """Evidencia PostgreSQL para ACL persistida y auditoría transaccional."""
 from __future__ import annotations
 
-from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from uuid import uuid4
 
 from alembic import command
 import psycopg
 import pytest
 import sqlalchemy as sa
+from fastapi.testclient import TestClient
 from sqlalchemy.engine import make_url
 from psycopg.rows import dict_row
 
-from app.security.models import AuthenticationError, AuthorizationContext, DocumentAuthorizationResult
+from app.security.models import AuthenticationError, AuthorizationContext, BootstrapAlreadyCompletedError, DocumentAuthorizationResult
 from app.security.repository import SecurityRepository
 from app.security.service import SecurityService
 from app.security.tokens import JwtService
+from app.main import app
 from tests.data.test_postgres_migrations import _config, _test_url
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture()
 def security_database():
     url = _test_url(); config = _config(url); engine = sa.create_engine(url)
     command.downgrade(config, "base"); command.upgrade(config, "head")
@@ -162,3 +165,119 @@ def test_transactional_denial_is_audited_without_confirming_a_mutation(security_
             sa.text("SELECT count(*) FROM audit.event WHERE action = 'AUTHORIZATION_DENIED' AND actor_user_id = :id"),
             {"id": account_id},
         ).scalar_one() == 1
+
+
+@pytest.mark.requires_db
+@pytest.mark.contract
+def test_initial_admin_bootstrap_is_atomic_audited_and_can_login(security_database, monkeypatch) -> None:
+    engine, conninfo = security_database
+    service = _service(conninfo)
+    monkeypatch.setattr(service.repository, "write_audit_event", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("controlled audit failure")))
+    with pytest.raises(RuntimeError, match="controlled audit failure"):
+        service.bootstrap_first_ti(username="first-admin", password="contraseña válida 123")
+    with engine.connect() as connection:
+        assert connection.execute(sa.text("SELECT count(*) FROM app.user_account")).scalar_one() == 0
+        assert connection.execute(sa.text("SELECT count(*) FROM audit.event WHERE action = 'SECURITY_BOOTSTRAP'")).scalar_one() == 0
+
+    service = _service(conninfo)
+    account_id = service.bootstrap_first_ti(username="first-admin", password="contraseña válida 123")
+    token, _ = service.login("first-admin", "contraseña válida 123")
+    principal = service.authenticated_principal(token)
+    assert principal.account_id == account_id
+    assert principal.roles == frozenset({"TI"})
+    with engine.connect() as connection:
+        event = connection.execute(
+            sa.text("""SELECT actor_type, actor_identifier, actor_user_id, resource_identifier
+                       FROM audit.event WHERE action = 'SECURITY_BOOTSTRAP'""")
+        ).mappings().one()
+    assert event == {
+        "actor_type": "PROCESS",
+        "actor_identifier": "security-bootstrap",
+        "actor_user_id": None,
+        "resource_identifier": str(account_id),
+    }
+
+
+@pytest.mark.requires_db
+@pytest.mark.contract
+def test_initial_admin_bootstrap_serializes_concurrent_attempts(security_database) -> None:
+    engine, conninfo = security_database
+
+    def attempt(username: str) -> str:
+        try:
+            _service(conninfo).bootstrap_first_ti(username=username, password="contraseña válida 123")
+            return "created"
+        except BootstrapAlreadyCompletedError:
+            return "completed"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(attempt, ("first-admin-a", "first-admin-b")))
+    assert sorted(outcomes) == ["completed", "created"]
+    with engine.connect() as connection:
+        assert connection.execute(
+            sa.text("""SELECT count(*) FROM app.user_role ur
+                       JOIN app.user_account u ON u.id = ur.user_id
+                       WHERE ur.role_id = 'TI' AND ur.active AND u.state = 'ACTIVE'""")
+        ).scalar_one() == 1
+
+
+@pytest.mark.requires_db
+@pytest.mark.contract
+def test_initial_admin_role_assignment_failure_rolls_back_and_allows_later_bootstrap(security_database, monkeypatch) -> None:
+    engine, conninfo = security_database
+    service = _service(conninfo)
+
+    def fail_role_assignment(*args, **kwargs):
+        raise RuntimeError("controlled role assignment failure")
+
+    monkeypatch.setattr(service.repository, "set_roles", fail_role_assignment)
+    with pytest.raises(RuntimeError, match="controlled role assignment failure"):
+        service.bootstrap_first_ti(username="first-admin", password="contraseña válida 123")
+    with engine.connect() as connection:
+        assert connection.execute(sa.text("SELECT count(*) FROM app.user_account")).scalar_one() == 0
+        assert connection.execute(sa.text("SELECT count(*) FROM app.user_role")).scalar_one() == 0
+        assert connection.execute(sa.text("SELECT count(*) FROM audit.event WHERE action = 'SECURITY_BOOTSTRAP'")).scalar_one() == 0
+
+    monkeypatch.undo()
+    account_id = service.bootstrap_first_ti(username="first-admin", password="contraseña válida 123")
+    with engine.connect() as connection:
+        assert connection.execute(
+            sa.text("SELECT count(*) FROM app.user_role WHERE user_id = :account_id AND role_id = 'TI' AND active"),
+            {"account_id": account_id},
+        ).scalar_one() == 1
+
+
+@pytest.mark.requires_db
+@pytest.mark.contract
+def test_initial_admin_can_use_normal_administration_api_after_login(security_database, monkeypatch) -> None:
+    _, conninfo = security_database
+    service = _service(conninfo)
+    service.bootstrap_first_ti(username="first-admin", password="contraseña válida 123")
+    monkeypatch.setattr(app.state, "security_service", service, raising=False)
+    monkeypatch.setattr(
+        app.state,
+        "security_settings",
+        SimpleNamespace(security_refresh_cookie_name="test_refresh", refresh_cookie_secure=False),
+        raising=False,
+    )
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"username": "first-admin", "password": "contraseña válida 123"})
+        assert login.status_code == 200
+        access_token = login.json()["access_token"]
+        create = client.post(
+            "/api/security/users",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "username": "normal-user",
+                "display_name": "Normal User",
+                "password": "contraseña válida 123",
+                "roles": ["JURIDICO"],
+            },
+        )
+    assert create.status_code == 201
+    with service.repository.transaction() as connection:
+        created = service.repository.account_by_username(connection, "normal-user")
+        assert created is not None
+        assert service.repository.has_active_ti_account(connection)
+    with pytest.raises(BootstrapAlreadyCompletedError):
+        service.bootstrap_first_ti(username="another-admin", password="contraseña válida 123")
