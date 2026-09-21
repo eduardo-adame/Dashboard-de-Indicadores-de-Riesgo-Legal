@@ -62,9 +62,44 @@ class Settings(BaseSettings):
     security_jwt_active_kid: str = ""
     security_refresh_cookie_name: str = "riesgo_legal_refresh"
     security_refresh_cookie_secure: bool | None = None
-    security_bootstrap_enabled: bool = False
-    security_bootstrap_username: str | None = None
-    security_bootstrap_password: str | None = None
+
+    # --- Ingesta de archivos ---------------------------------------------
+    ingestion_storage_root: str = ".data/ingestion"
+    ingestion_controlled_root: str = ".data/controlled"
+    ingestion_max_file_bytes: int = 52_428_800
+    ingestion_max_archive_entries: int = 2_000
+    ingestion_max_archive_uncompressed_bytes: int = 268_435_456
+    ingestion_max_archive_entry_bytes: int = 67_108_864
+    ingestion_max_compression_ratio: float = 100.0
+    ingestion_csv_sample_bytes: int = 65_536
+    ingestion_stream_chunk_bytes: int = 1_048_576
+    ingestion_max_tabular_rows: int = 250_000
+    ingestion_max_tabular_columns: int = 256
+    ingestion_max_tabular_cells: int = 5_000_000
+
+    @field_validator(
+        "ingestion_max_file_bytes",
+        "ingestion_max_archive_entries",
+        "ingestion_max_archive_uncompressed_bytes",
+        "ingestion_max_archive_entry_bytes",
+        "ingestion_csv_sample_bytes",
+        "ingestion_stream_chunk_bytes",
+        "ingestion_max_tabular_rows",
+        "ingestion_max_tabular_columns",
+        "ingestion_max_tabular_cells",
+    )
+    @classmethod
+    def validate_positive_ingestion_limit(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("Los límites de ingesta deben ser positivos")
+        return value
+
+    @field_validator("ingestion_max_compression_ratio")
+    @classmethod
+    def validate_compression_ratio(cls, value: float) -> float:
+        if value <= 1:
+            raise ValueError("La relación máxima de compresión debe ser mayor que uno")
+        return value
 
     @field_validator("security_jwt_keyring_json")
     @classmethod

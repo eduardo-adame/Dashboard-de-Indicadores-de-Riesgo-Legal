@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 from app.config import get_settings
 from app.db import check_database
 from app.embeddings import EmbeddingUnavailableError, get_embedding_service
+from app.ingestion.api import router as ingestion_router
 from app.security.api import router as security_router
 
 logging.basicConfig(
@@ -69,10 +70,11 @@ app.add_middleware(
     allow_origins=get_settings().cors_origin_list,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "PUT"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=["Content-Type", "Authorization", "Idempotency-Key"],
 )
 
 app.include_router(security_router)
+app.include_router(ingestion_router)
 
 
 @app.get("/health", tags=["health"])

@@ -60,9 +60,14 @@ x-airflow-common: &airflow-common
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/sqlite_db/airflow.db
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
     AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET_KEY:-}
+    INGESTION_API_URL: http://backend:8000
+    AIRFLOW_INGESTION_USERNAME: ${AIRFLOW_INGESTION_USERNAME:-airflow-ingestion}
+    AIRFLOW_INGESTION_PASSWORD: ${AIRFLOW_INGESTION_PASSWORD:?AIRFLOW_INGESTION_PASSWORD debe definirse en producto/.env}
   volumes:
     - airflow_db:/opt/airflow/sqlite_db
     - airflow_logs:/opt/airflow/logs
+    - ./airflow/dags:/opt/airflow/dags:ro
+    - ingestion_controlled:/data/controlled:ro
   networks:
     - riesgo-legal
   profiles: ["airflow"]
@@ -142,10 +147,23 @@ services:
       EMBEDDING_DIMENSIONS: "1024"
       BGE_M3_REQUIRED_AT_STARTUP: "False"
       BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000}
+      SECURITY_JWT_ISSUER: ${SECURITY_JWT_ISSUER:-riesgo-legal-backend}
+      SECURITY_JWT_AUDIENCE: ${SECURITY_JWT_AUDIENCE:-riesgo-legal-web}
+      SECURITY_JWT_KEYRING_JSON: ${SECURITY_JWT_KEYRING_JSON:-}
+      SECURITY_JWT_ACTIVE_KID: ${SECURITY_JWT_ACTIVE_KID:-}
+      SECURITY_REFRESH_COOKIE_NAME: ${SECURITY_REFRESH_COOKIE_NAME:-riesgo_legal_refresh}
+      SECURITY_REFRESH_COOKIE_SECURE: ${SECURITY_REFRESH_COOKIE_SECURE:-False}
+      SECURITY_BOOTSTRAP_ENABLED: ${SECURITY_BOOTSTRAP_ENABLED:-False}
+      SECURITY_BOOTSTRAP_USERNAME: ${SECURITY_BOOTSTRAP_USERNAME:-}
+      SECURITY_BOOTSTRAP_PASSWORD: ${SECURITY_BOOTSTRAP_PASSWORD:-}
+      INGESTION_STORAGE_ROOT: /data/ingestion
+      INGESTION_CONTROLLED_ROOT: /data/controlled
     volumes:
       # Caché persistente del modelo: sobrevive a `docker compose down` (sin -v)
       # y evita volver a descargar varios gigabytes entre recreaciones.
       - bge_cache:/home/appuser/.cache/bge-m3
+      - ingestion_storage:/data/ingestion
+      - ingestion_controlled:/data/controlled
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     networks:
@@ -336,6 +354,10 @@ volumes:
     name: riesgo-legal-airflow-db
   airflow_logs:
     name: riesgo-legal-airflow-logs
+  ingestion_storage:
+    name: riesgo-legal-ingestion-storage
+  ingestion_controlled:
+    name: riesgo-legal-ingestion-controlled
 
 networks:
   riesgo-legal:
