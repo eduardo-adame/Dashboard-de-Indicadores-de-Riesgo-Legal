@@ -146,6 +146,7 @@ def logout(response: Response, principal: AuthenticatedPrincipal = Depends(curre
         service.logout(principal)
     except SecurityError:
         raise unauthenticated() from None
+    response.status_code = status.HTTP_204_NO_CONTENT
     response.delete_cookie(settings.security_refresh_cookie_name, path="/api/auth", httponly=True, samesite="strict", secure=settings.refresh_cookie_secure)
     return response
 
