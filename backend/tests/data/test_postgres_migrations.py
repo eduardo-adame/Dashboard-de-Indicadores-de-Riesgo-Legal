@@ -27,6 +27,9 @@ REVISIONS = (
     "0006_security_priv",
     "0007_ingestion_rejections",
     "0008_ingestion_resource_receipts",
+    "0009_coordination_dispatch",
+    "0010_document_candidate",
+    "0011_document_manage_capability",
 )
 
 
@@ -79,6 +82,9 @@ def test_every_revision_is_valid_and_round_trips(migrated_database: tuple[sa.Eng
         "0006_security_priv": {"user_account", "access_session", "document_exception"},
         "0007_ingestion_rejections": {"ingest_file", "stored_object"},
         "0008_ingestion_resource_receipts": {"ingest_file", "stored_object"},
+        "0009_coordination_dispatch": {"coordination_dispatch", "ingest_file"},
+        "0010_document_candidate": {"document_candidate", "document_candidate_page"},
+        "0011_document_manage_capability": {"permission", "role_permission"},
     }
     previous = "base"
     for revision in REVISIONS:
@@ -339,3 +345,93 @@ def test_unsupported_format_is_recordable_but_never_processable(
                 ),
                 {"id": uuid.uuid4(), "operation": uuid.uuid4(), "correlation": uuid.uuid4()},
             )
+
+
+def _insert_supported_ingest_file(connection, *, file_id, object_id) -> None:
+    connection.execute(
+        sa.text(
+            "INSERT INTO app.stored_object "
+            "(id, storage_kind, locator, sha256, mime_type, byte_size, original_name) "
+            "VALUES (:id, 'FILESYSTEM', :locator, :sha, 'text/csv', 10, 'data.csv')"
+        ),
+        {"id": object_id, "locator": f"objects/ab/{object_id}-data.csv", "sha": bytes(32)},
+    )
+    connection.execute(
+        sa.text(
+            """INSERT INTO app.ingest_file
+               (id, stored_object_id, source_family, exchange_format, state, operation_id, correlation_id,
+                declared_extension, detected_format, format_classification, technical_result,
+                declared_name, source_locator, source_revision, actor_identifier, content_sha256)
+               VALUES (:id, :object, 'CONTRATOS_DOCUMENTOS', 'CSV', 'COMPLETADO', :operation, :correlation,
+                       '.csv', 'CSV', 'SUPPORTED', 'ACCEPTED', 'data.csv', :locator, 1, 'test', :sha)"""
+        ),
+        {
+            "id": file_id,
+            "object": object_id,
+            "operation": uuid.uuid4(),
+            "correlation": uuid.uuid4(),
+            "locator": f"test/{file_id}/data.csv",
+            "sha": bytes(32),
+        },
+    )
+
+
+@pytest.mark.requires_db
+@pytest.mark.data_schema
+def test_coordination_dispatch_identity_and_constraints(
+    migrated_database: tuple[sa.Engine, Config],
+) -> None:
+    engine, config = migrated_database
+    command.upgrade(config, "head")
+
+    file_a = uuid.uuid4()
+    file_b = uuid.uuid4()
+    with engine.begin() as connection:
+        _insert_supported_ingest_file(connection, file_id=file_a, object_id=uuid.uuid4())
+        _insert_supported_ingest_file(connection, file_id=file_b, object_id=uuid.uuid4())
+
+    def _insert_dispatch(connection, *, file_id, operation_id, target="VALIDATION", state="NEW"):
+        connection.execute(
+            sa.text(
+                """INSERT INTO app.coordination_dispatch
+                   (id, operation_id, file_id, downstream_target, state, correlation_id)
+                   VALUES (gen_random_uuid(), :operation, :file, :target, :state, :correlation)"""
+            ),
+            {
+                "operation": operation_id,
+                "file": file_id,
+                "target": target,
+                "state": state,
+                "correlation": uuid.uuid4(),
+            },
+        )
+
+    operation_id = uuid.uuid4()
+    with engine.begin() as connection:
+        _insert_dispatch(connection, file_id=file_a, operation_id=operation_id)
+
+    # Identidad idempotente (file_id, downstream_target)
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            _insert_dispatch(connection, file_id=file_a, operation_id=uuid.uuid4())
+
+    # Identidad estable de operación (operation_id único)
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            _insert_dispatch(connection, file_id=file_b, operation_id=operation_id)
+
+    # Estado inválido
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            _insert_dispatch(connection, file_id=file_b, operation_id=uuid.uuid4(), state="UNKNOWN")
+
+    # Destino inválido
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            _insert_dispatch(connection, file_id=file_b, operation_id=uuid.uuid4(), target="OTHER")
+
+    # FK hacia ingest_file
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            _insert_dispatch(connection, file_id=uuid.uuid4(), operation_id=uuid.uuid4())
+
