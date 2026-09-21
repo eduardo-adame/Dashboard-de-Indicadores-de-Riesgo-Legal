@@ -14,3 +14,7 @@ pypdf==6.10.0
 openpyxl==3.1.5
 python-docx==1.2.0
 python-multipart==0.0.20
+# Procesamiento documental / OCR: rasterización de PDF y reconocimiento óptico.
+pdf2image==1.17.0
+pytesseract==0.3.13
+Pillow==11.1.0

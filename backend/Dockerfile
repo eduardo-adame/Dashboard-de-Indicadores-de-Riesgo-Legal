@@ -13,9 +13,15 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Dependencias de sistema mínimas para compilar las dependencias de Python.
+# Dependencias de sistema mínimas para compilar las dependencias de Python y para
+# el procesamiento documental: `poppler-utils` rasteriza PDF a imagen y
+# `tesseract-ocr` (+ idioma español) reconoce el texto impreso.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        poppler-utils \
+        tesseract-ocr \
+        tesseract-ocr-spa \
     && rm -rf /var/lib/apt/lists/*
 
 # PyTorch CPU-only: evita los wheels CUDA (~2.5 GB) que este servicio no necesita,
