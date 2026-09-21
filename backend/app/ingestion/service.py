@@ -18,6 +18,7 @@ from openpyxl.utils.exceptions import InvalidFileException
 from pypdf.errors import PdfReadError
 
 from app.ingestion.detection import detect_format
+from app.ingestion.document_candidate_repository import DocumentCandidateRepository
 from app.ingestion.extraction import extract_document, extract_tabular
 from app.ingestion.models import (
     CONTROLLED_LOCATIONS,
@@ -207,6 +208,8 @@ class IngestionService:
                     )
                     if records is not None:
                         self.repository.insert_rows(connection, file_id, records)
+                    if document is not None:
+                        DocumentCandidateRepository.persist(connection, file_id=file_id, candidate=document)
                     if state == "CUARENTENA":
                         quarantine_id = self.repository.insert_quarantine(
                             connection, file_id=file_id, object_id=object_id, cause_code=cause or "TECHNICAL_FAILURE",
