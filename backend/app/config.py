@@ -104,6 +104,42 @@ class Settings(BaseSettings):
             raise ValueError("La relación máxima de compresión debe ser mayor que uno")
         return value
 
+    # --- Procesamiento documental / OCR ------------------------------------
+    # Valores por defecto de implementación para desarrollo; no son requisitos
+    # del contrato funcional y pueden ajustarse por configuración.
+    ocr_dpi: int = 300
+    ocr_min_dpi: int = 150
+    ocr_max_dpi: int = 600
+    ocr_max_pages_per_document: int = 1000
+    ocr_timeout_seconds: int = 300
+    # Límite de dimensiones de la imagen rasterizada (píxeles decodificados).
+    ocr_max_image_pixels: int = 100_000_000
+
+    # --- Fragmentación de corpus -------------------------------------------
+    # Segmentación estructural por defecto: 512 tokens con 50 de solapamiento.
+    chunk_max_tokens: int = 512
+    chunk_overlap_tokens: int = 50
+
+    # --- Coordinación de despacho ------------------------------------------
+    # Umbral de recuperación de despachos en curso sin latido reciente.
+    coordination_stale_threshold_seconds: int = 3600
+    # Tiempo máximo del cliente de coordinación; mayor que el timeout de OCR.
+    coordination_timeout_seconds: int = 360
+
+    @field_validator("ocr_dpi", "ocr_min_dpi", "ocr_max_dpi", "ocr_max_pages_per_document", "ocr_timeout_seconds", "ocr_max_image_pixels", "chunk_max_tokens")
+    @classmethod
+    def validate_positive_document_limit(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("Los límites documentales deben ser positivos")
+        return value
+
+    @field_validator("chunk_overlap_tokens")
+    @classmethod
+    def validate_overlap(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("El solapamiento de fragmentos no puede ser negativo")
+        return value
+
     @field_validator("security_jwt_keyring_json")
     @classmethod
     def validate_keyring_json(cls, value: str) -> str:
