@@ -25,6 +25,8 @@ REVISIONS = (
     "0004_analytics_rag_jobs",
     "0005_security_audit_grants",
     "0006_security_priv",
+    "0007_ingestion_rejections",
+    "0008_ingestion_resource_receipts",
 )
 
 
@@ -75,6 +77,8 @@ def test_every_revision_is_valid_and_round_trips(migrated_database: tuple[sa.Eng
         "0004_analytics_rag_jobs": {"analytic_run", "kpi_observation", "rag_operation", "rag_final_fragment"},
         "0005_security_audit_grants": {"user_account", "access_session", "document_exception"},
         "0006_security_priv": {"user_account", "access_session", "document_exception"},
+        "0007_ingestion_rejections": {"ingest_file", "stored_object"},
+        "0008_ingestion_resource_receipts": {"ingest_file", "stored_object"},
     }
     previous = "base"
     for revision in REVISIONS:
@@ -124,16 +128,19 @@ def test_contract_constraints_atomic_version_and_audit_privileges(
         connection.execute(
             sa.text(
                 "INSERT INTO app.ingest_file "
-                "(id, stored_object_id, source_family, exchange_format, state, operation_id, correlation_id) "
-                "VALUES (:id, :object, 'CONTRATOS_DOCUMENTOS', 'PDF', 'CUARENTENA', :operation, :correlation)"
+                "(id, stored_object_id, source_family, exchange_format, state, operation_id, correlation_id, "
+                " declared_extension, detected_format, declared_name, source_locator, source_revision, "
+                " actor_identifier, content_sha256) "
+                "VALUES (:id, :object, 'CONTRATOS_DOCUMENTOS', 'PDF', 'CUARENTENA', :operation, :correlation, "
+                " '.pdf', 'PDF', '1.pdf', 'documents/1.pdf', 1, 'test', :sha)"
             ),
-            {"id": ids["ingest"], "object": ids["object1"], "operation": operation, "correlation": correlation},
+            {"id": ids["ingest"], "object": ids["object1"], "operation": operation, "correlation": correlation, "sha": digest},
         )
         connection.execute(
             sa.text(
                 "INSERT INTO app.source_record "
-                "(id, ingest_file_id, row_number, raw_payload, record_sha256, extraction_state) "
-                "VALUES (:id, :file, 1, '{\"id\": \"DOC-1\"}'::jsonb, :sha, 'CUARENTENA')"
+                "(id, ingest_file_id, row_number, source_sheet, raw_payload, record_sha256, extraction_state) "
+                "VALUES (:id, :file, 1, 'LEGACY', '{\"id\": \"DOC-1\"}'::jsonb, :sha, 'CUARENTENA')"
             ),
             {"id": ids["source"], "file": ids["ingest"], "sha": digest},
         )
@@ -264,3 +271,71 @@ def test_runtime_role_cannot_mutate_audit(migrated_database: tuple[sa.Engine, Co
         with pytest.raises(DBAPIError):
             connection.execute(sa.text("UPDATE audit.event SET result = 'CHANGED'"))
         transaction.rollback()
+
+
+@pytest.mark.requires_db
+@pytest.mark.data_schema
+def test_unsupported_format_is_recordable_but_never_processable(
+    migrated_database: tuple[sa.Engine, Config],
+) -> None:
+    engine, config = migrated_database
+    command.upgrade(config, "head")
+    object_id = uuid.uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO app.stored_object "
+                "(id, storage_kind, locator, sha256, mime_type, byte_size, original_name) "
+                "VALUES (:id, 'FILESYSTEM', :locator, :sha, 'application/octet-stream', 4, 'payload.bin')"
+            ),
+            {"id": object_id, "locator": f"ingestion-test/{object_id}.bin", "sha": bytes(32)},
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO app.ingest_file "
+                "(id, stored_object_id, source_family, exchange_format, state, operation_id, correlation_id, "
+                " declared_extension, detected_format, format_classification, technical_result, safe_cause_code, "
+                " declared_name, source_locator, source_revision, actor_identifier, content_sha256) "
+                "VALUES (:id, :object, 'CONTRATOS_DOCUMENTOS', NULL, 'RECHAZADO', :operation, :correlation, "
+                " '.bin', 'BINARY', 'UNSUPPORTED', 'REJECTED', 'UNSUPPORTED_FORMAT', "
+                " 'payload.bin', 'test/payload.bin', 1, 'test', :sha)"
+            ),
+            {
+                "id": uuid.uuid4(), "object": object_id,
+                "operation": uuid.uuid4(), "correlation": uuid.uuid4(), "sha": bytes(32),
+            },
+        )
+
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    "INSERT INTO app.ingest_file "
+                    "(id, stored_object_id, source_family, exchange_format, state, operation_id, correlation_id, "
+                    " declared_extension, detected_format, format_classification, technical_result, safe_cause_code, "
+                    " declared_name, source_locator, source_revision, actor_identifier, content_sha256) "
+                    "VALUES (:id, :object, 'CONTRATOS_DOCUMENTOS', NULL, 'PROCESANDO', :operation, :correlation, "
+                    " '.bin', 'BINARY', 'UNSUPPORTED', 'REJECTED', 'UNSUPPORTED_FORMAT', "
+                    " 'payload.bin', 'test/invalid.bin', 1, 'test', :sha)"
+                ),
+                {
+                    "id": uuid.uuid4(), "object": object_id,
+                    "operation": uuid.uuid4(), "correlation": uuid.uuid4(), "sha": bytes(32),
+                },
+            )
+
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    """INSERT INTO app.ingest_file
+                       (id, stored_object_id, source_family, exchange_format, state, operation_id, correlation_id,
+                        declared_extension, detected_format, format_classification, technical_result, safe_cause_code,
+                        declared_name, source_locator, source_revision, actor_identifier, content_sha256,
+                        content_sha256_complete, observed_byte_size)
+                       VALUES (:id, NULL, 'LITIGIOS', NULL, 'RECHAZADO', :operation, :correlation,
+                               '.csv', 'NOT_INSPECTED_RESOURCE_LIMIT', 'UNDETERMINED', 'REJECTED',
+                               'OTHER_CAUSE', 'payload.csv', 'test/invalid-receipt.csv', 1, 'test', NULL, false, 6)"""
+                ),
+                {"id": uuid.uuid4(), "operation": uuid.uuid4(), "correlation": uuid.uuid4()},
+            )

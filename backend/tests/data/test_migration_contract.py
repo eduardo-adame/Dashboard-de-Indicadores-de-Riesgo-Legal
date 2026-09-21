@@ -24,6 +24,10 @@ def test_runtime_is_python_312_and_pins_are_resolved() -> None:
     assert version("psycopg") == "3.2.3"
     assert version("PyJWT") == "2.10.1"
     assert version("pwdlib") == "0.2.1"
+    assert version("pypdf") == "6.10.0"
+    assert version("openpyxl") == "3.1.5"
+    assert version("python-docx") == "1.2.0"
+    assert version("python-multipart") == "0.0.20"
 
 
 @pytest.mark.data_schema
@@ -38,6 +42,8 @@ def test_revision_chain_is_linear_and_complete() -> None:
         "0004_analytics_rag_jobs",
         "0005_security_audit_grants",
         "0006_security_priv",
+        "0007_ingestion_rejections",
+        "0008_ingestion_resource_receipts",
     ]
     assert len(script.get_heads()) == 1
 
@@ -59,6 +65,7 @@ def test_offline_upgrade_and_downgrade_compile() -> None:
     assert "using hnsw" in sql
     assert "create table audit.event" in sql
     assert "riesgo_legal_migration_owner" in sql
+    assert "ck_ingest_file_unsupported_terminal" in sql
 
     downgrade = subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), "downgrade", "head:base", "--sql"],
