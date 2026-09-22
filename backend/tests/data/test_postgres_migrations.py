@@ -11,6 +11,7 @@ import uuid
 
 from alembic import command
 from alembic.config import Config
+import psycopg
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.engine import make_url
@@ -30,6 +31,7 @@ REVISIONS = (
     "0009_coordination_dispatch",
     "0010_document_candidate",
     "0011_document_manage_capability",
+    "0012_kpi_observation_semantics",
 )
 
 
@@ -85,6 +87,9 @@ def test_every_revision_is_valid_and_round_trips(migrated_database: tuple[sa.Eng
         "0009_coordination_dispatch": {"coordination_dispatch", "ingest_file"},
         "0010_document_candidate": {"document_candidate", "document_candidate_page"},
         "0011_document_manage_capability": {"permission", "role_permission"},
+        # 0012 alinea kpi_observation; no crea tablas nuevas. El mapa comprueba
+        # únicamente existencia de tablas, por lo que el conjunto es vacío.
+        "0012_kpi_observation_semantics": set(),
     }
     previous = "base"
     for revision in REVISIONS:
@@ -434,4 +439,213 @@ def test_coordination_dispatch_identity_and_constraints(
     with pytest.raises(IntegrityError):
         with engine.begin() as connection:
             _insert_dispatch(connection, file_id=uuid.uuid4(), operation_id=uuid.uuid4())
+
+
+def _current_revision(engine: sa.Engine) -> str | None:
+    with engine.connect() as connection:
+        if connection.execute(sa.text("SELECT to_regclass('public.alembic_version')")).scalar() is None:
+            return None
+        return connection.execute(
+            sa.text("SELECT version_num FROM public.alembic_version")
+        ).scalar_one_or_none()
+
+
+@pytest.fixture()
+def analytical_database() -> tuple[sa.Engine, Config]:
+    """Base desechable para la semántica de ``kpi_observation``.
+
+    No usa ``downgrade base``; cada prueba fija el estado con ``upgrade`` y
+    ``downgrade`` dirigidos sobre las revisiones analíticas.
+    """
+    url = _test_url()
+    config = _config(url)
+    engine = sa.create_engine(url)
+    try:
+        yield engine, config
+    finally:
+        engine.dispose()
+
+
+def _insert_analytic_run(connection) -> uuid.UUID:
+    run_id = uuid.uuid4()
+    connection.execute(
+        sa.text(
+            "INSERT INTO app.analytic_run "
+            "(id, run_type, state, result, operation_id, correlation_id, completed_at) "
+            "VALUES (:id, 'KPI_RECALCULATION', 'COMPLETED', 'OK', :operation, :correlation, "
+            " CURRENT_TIMESTAMP)"
+        ),
+        {"id": run_id, "operation": uuid.uuid4(), "correlation": uuid.uuid4()},
+    )
+    return run_id
+
+
+def _observation_insert():
+    return sa.text(
+        "INSERT INTO app.kpi_observation "
+        "(id, analytic_run_id, kpi_code, period_start, period_end, dimensions, value, "
+        " availability, as_of_date) "
+        "VALUES (:id, :analytic_run_id, :kpi_code, :period_start, :period_end, "
+        " CAST(:dimensions AS jsonb), :value, :availability, :as_of_date)"
+    )
+
+
+def _observation_params(run_id: uuid.UUID, **overrides) -> dict:
+    params: dict = {
+        "id": uuid.uuid4(),
+        "analytic_run_id": run_id,
+        "kpi_code": "KPI-RC-01",
+        "period_start": "2026-01-01",
+        "period_end": "2026-01-31",
+        "dimensions": "{}",
+        "value": 10.0,
+        "availability": "DISPONIBLE",
+        "as_of_date": "2026-01-31",
+    }
+    params.update(overrides)
+    return params
+
+
+def _assert_constraint_violation(connection, statement, params, expected_constraint: str) -> None:
+    """Ejecuta una sentencia inválida aislada en SAVEPOINT y verifica la constraint."""
+    savepoint = connection.begin_nested()
+    try:
+        with pytest.raises(IntegrityError) as exc_info:
+            connection.execute(statement, params)
+        original = exc_info.value.orig
+        assert isinstance(original, psycopg.errors.CheckViolation)
+        assert original.diag.constraint_name == expected_constraint
+    finally:
+        savepoint.rollback()
+
+
+@pytest.mark.requires_db
+@pytest.mark.data_schema
+def test_0012_refuses_upgrade_when_kpi_observation_has_rows(
+    analytical_database: tuple[sa.Engine, Config],
+) -> None:
+    engine, config = analytical_database
+    if _current_revision(engine) == "0012_kpi_observation_semantics":
+        command.downgrade(config, "0011_document_manage_capability")
+    command.upgrade(config, "0011_document_manage_capability")
+
+    observation_id = uuid.uuid4()
+    with engine.begin() as connection:
+        run_id = _insert_analytic_run(connection)
+        connection.execute(
+            sa.text(
+                "INSERT INTO app.kpi_observation "
+                "(id, analytic_run_id, kpi_code, period_start, period_end, dimensions, value, availability) "
+                "VALUES (:id, :run_id, 'KPI-RC-01', '2026-01-01', '2026-01-31', "
+                " CAST('{}' AS jsonb), 10.0, 'DISPONIBLE')"
+            ),
+            {"id": observation_id, "run_id": run_id},
+        )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        command.upgrade(config, "0012_kpi_observation_semantics")
+    assert "MIGRATION_0012_ABORT" in str(exc_info.value)
+
+    with engine.connect() as connection:
+        assert connection.execute(
+            sa.text("SELECT version_num FROM public.alembic_version")
+        ).scalar_one() == "0011_document_manage_capability"
+
+    inspector = sa.inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("kpi_observation", schema="app")}
+    assert "as_of_date" not in columns
+    constraints = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("kpi_observation", schema="app")
+    }
+    assert "ck_kpi_observation_period_start_monthly" not in constraints
+    assert "ck_kpi_observation_period_end_monthly" not in constraints
+    assert "ck_kpi_observation_dimensions_object" not in constraints
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text("DELETE FROM app.kpi_observation WHERE id = :id"), {"id": observation_id}
+        )
+        connection.execute(sa.text("DELETE FROM app.analytic_run WHERE id = :id"), {"id": run_id})
+
+    command.upgrade(config, "0012_kpi_observation_semantics")
+
+
+@pytest.fixture()
+def kpi_observation_context(analytical_database: tuple[sa.Engine, Config]):
+    engine, config = analytical_database
+    command.upgrade(config, "0012_kpi_observation_semantics")
+    with engine.begin() as connection:
+        run_id = _insert_analytic_run(connection)
+    try:
+        yield engine, run_id
+    finally:
+        with engine.begin() as connection:
+            connection.execute(sa.text("DELETE FROM app.kpi_observation"))
+            connection.execute(sa.text("DELETE FROM app.analytic_run"))
+
+
+@pytest.mark.requires_db
+@pytest.mark.data_schema
+def test_kpi_observation_period_start_must_be_first_day(kpi_observation_context) -> None:
+    engine, run_id = kpi_observation_context
+    statement = _observation_insert()
+    # period_end coherente con la aritmética para aislar la constraint objetivo.
+    params = _observation_params(run_id, period_start="2026-01-15", period_end="2026-02-14")
+    with engine.begin() as connection:
+        _assert_constraint_violation(
+            connection, statement, params, "ck_kpi_observation_period_start_monthly"
+        )
+
+
+@pytest.mark.requires_db
+@pytest.mark.data_schema
+def test_kpi_observation_period_end_must_be_last_day(kpi_observation_context) -> None:
+    engine, run_id = kpi_observation_context
+    statement = _observation_insert()
+    params = _observation_params(run_id, period_end="2026-01-30")
+    with engine.begin() as connection:
+        _assert_constraint_violation(
+            connection, statement, params, "ck_kpi_observation_period_end_monthly"
+        )
+
+
+@pytest.mark.requires_db
+@pytest.mark.data_schema
+def test_kpi_observation_dimensions_must_be_object(kpi_observation_context) -> None:
+    engine, run_id = kpi_observation_context
+    statement = _observation_insert()
+    params = _observation_params(run_id, dimensions="[]")
+    with engine.begin() as connection:
+        _assert_constraint_violation(
+            connection, statement, params, "ck_kpi_observation_dimensions_object"
+        )
+
+
+@pytest.mark.requires_db
+@pytest.mark.data_schema
+def test_kpi_observation_dimensions_object_passes(kpi_observation_context) -> None:
+    engine, run_id = kpi_observation_context
+    statement = _observation_insert()
+    params = _observation_params(run_id, dimensions='{"nivel_severidad": "alto"}')
+    with engine.begin() as connection:
+        connection.execute(statement, params)
+
+
+@pytest.mark.requires_db
+@pytest.mark.data_schema
+def test_kpi_observation_as_of_date_is_not_null(kpi_observation_context) -> None:
+    engine, run_id = kpi_observation_context
+    statement = _observation_insert()
+    params = _observation_params(run_id, as_of_date=None)
+    with engine.begin() as connection:
+        savepoint = connection.begin_nested()
+        try:
+            with pytest.raises(IntegrityError) as exc_info:
+                connection.execute(statement, params)
+            original = exc_info.value.orig
+            assert isinstance(original, psycopg.errors.NotNullViolation)
+            assert original.diag.column_name == "as_of_date"
+        finally:
+            savepoint.rollback()
 

@@ -50,6 +50,7 @@ def test_revision_chain_is_linear_and_complete() -> None:
         "0009_coordination_dispatch",
         "0010_document_candidate",
         "0011_document_manage_capability",
+        "0012_kpi_observation_semantics",
     ]
     assert len(script.get_heads()) == 1
 
