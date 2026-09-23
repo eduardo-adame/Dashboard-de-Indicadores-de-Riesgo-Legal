@@ -12,7 +12,6 @@ from uuid import UUID
 
 from app.ingestion.models import SourceFamily
 from app.security.models import AuthenticatedPrincipal, SecurityError
-from app.validation.contracts import contract_for_family
 from app.validation.models import QuarantineCause, ValidationResult
 from app.validation.quarantine import (
     QuarantineError,
@@ -23,8 +22,8 @@ from app.validation.quarantine import (
     mark_reinjected,
     reinject as _reinject,
 )
-from app.validation.records import derive_record_operation_id, validate_record
-from app.validation.structural import validate_structure
+from app.validation.records import derive_record_operation_id, validate_record_for_family
+from app.validation.structural import validate_structure_for_family
 
 
 @dataclass(frozen=True)
@@ -62,11 +61,10 @@ class ValidationService:
         context: ValidationContext,
         capability: str = "ingest.execute",
     ) -> ValidationResult:
-        contract = contract_for_family(family)
-        structural = validate_structure(
+        structural = validate_structure_for_family(
             headers,
             ((record.position, record.width) for record in records),
-            contract,
+            family,
         )
 
         if not structural.conforming:
@@ -95,7 +93,7 @@ class ValidationService:
         with self.repository.transaction() as connection:
             self._authorize(connection, context, capability)
             for record in records:
-                outcome = validate_record(record.values_by_name, contract)
+                outcome = validate_record_for_family(record.values_by_name, family)
                 if outcome.conforming:
                     conforming.append(record.position)
                     continue
@@ -151,7 +149,7 @@ class ValidationService:
                 raise QuarantineError("elemento de cuarentena inexistente")
             candidate = _reinject(item, corrected_payload)
             contract_family = self._family_for(connection, item)
-            outcome = validate_record(corrected_payload, contract_for_family(contract_family))
+            outcome = validate_record_for_family(corrected_payload, contract_family)
             if outcome.conforming:
                 updated = mark_reinjected(candidate)
             else:

@@ -12,6 +12,33 @@ _REVISION_CATALOG = frozenset(
     {"No iniciado", "En revisión", "En renovación", "Renovado", "Cancelado"}
 )
 _SEVERITY_CATALOG = frozenset({"alto", "medio", "bajo"})
+_LEGAL_MATTER_TYPE_CATALOG = frozenset({"Contrato", "Litigio", "Cumplimiento", "Auditoría"})
+
+
+AUDIT_INCIDENT = DataContract(
+    family=SourceFamily.INTERNAL_AUDIT,
+    stable_id="ID_Incidente",
+    required_columns=("ID_Incidente", "Fecha_Evento", "Area", "Nivel_Severidad"),
+    fields=(
+        FieldSpec("ID_Incidente", FieldType.TEXT, required=True),
+        FieldSpec("Fecha_Evento", FieldType.DATE, required=True),
+        FieldSpec("Area", FieldType.TEXT, required=True),
+        FieldSpec("Nivel_Severidad", FieldType.CATALOG, required=True, catalog=_SEVERITY_CATALOG),
+    ),
+)
+
+
+AUDIT_LEGAL_MATTER = DataContract(
+    family=SourceFamily.INTERNAL_AUDIT,
+    stable_id="ID_Asunto",
+    required_columns=("ID_Asunto", "Tipo_Asunto", "Estado", "Fecha"),
+    fields=(
+        FieldSpec("ID_Asunto", FieldType.TEXT, required=True),
+        FieldSpec("Tipo_Asunto", FieldType.CATALOG, required=True, catalog=_LEGAL_MATTER_TYPE_CATALOG),
+        FieldSpec("Estado", FieldType.TEXT, required=True),
+        FieldSpec("Fecha", FieldType.DATE, required=True),
+    ),
+)
 
 CONTRACTS: dict[SourceFamily, DataContract] = {
     SourceFamily.CONTRACTS_DOCUMENTS: DataContract(
@@ -49,17 +76,11 @@ CONTRACTS: dict[SourceFamily, DataContract] = {
             FieldSpec("Evidencia_Cumplimiento", FieldType.TEXT, required=False),
         ),
     ),
-    SourceFamily.INTERNAL_AUDIT: DataContract(
-        family=SourceFamily.INTERNAL_AUDIT,
-        stable_id="ID_Incidente",
-        required_columns=("ID_Incidente", "Fecha_Evento", "Area", "Nivel_Severidad"),
-        fields=(
-            FieldSpec("ID_Incidente", FieldType.TEXT, required=True),
-            FieldSpec("Fecha_Evento", FieldType.DATE, required=True),
-            FieldSpec("Area", FieldType.TEXT, required=True),
-            FieldSpec("Nivel_Severidad", FieldType.CATALOG, required=True, catalog=_SEVERITY_CATALOG),
-        ),
-    ),
+    SourceFamily.INTERNAL_AUDIT: AUDIT_INCIDENT,
+}
+
+_COMPOSITE_CONTRACTS: dict[SourceFamily, tuple[DataContract, ...]] = {
+    SourceFamily.INTERNAL_AUDIT: (AUDIT_INCIDENT, AUDIT_LEGAL_MATTER),
 }
 
 
@@ -67,5 +88,13 @@ def contract_for_family(family: SourceFamily) -> DataContract:
     """Devuelve el contrato de datos de una familia del MVP."""
     try:
         return CONTRACTS[family]
+    except KeyError:  # pragma: no cover - defensivo
+        raise ValueError(f"familia sin contrato de datos: {family}") from None
+
+
+def contracts_for_family(family: SourceFamily) -> tuple[DataContract, ...]:
+    """Devuelve los contratos aplicables a una familia, en orden determinista."""
+    try:
+        return _COMPOSITE_CONTRACTS.get(family, (CONTRACTS[family],))
     except KeyError:  # pragma: no cover - defensivo
         raise ValueError(f"familia sin contrato de datos: {family}") from None

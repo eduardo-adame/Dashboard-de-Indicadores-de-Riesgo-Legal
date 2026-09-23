@@ -9,6 +9,8 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from uuid import UUID, uuid5
 
+from app.ingestion.models import SourceFamily
+from app.validation.contracts import contracts_for_family
 from app.validation.models import (
     DataContract,
     FieldSpec,
@@ -91,6 +93,30 @@ def validate_record(values_by_name: dict[str, object], contract: DataContract) -
         if current < reference:
             return RecordValidation(False, QuarantineCause.DATE_ORDER_VIOLATION, spec.name)
 
+    return RecordValidation(True, None, None)
+
+
+def validate_record_for_family(
+    values_by_name: dict[str, object],
+    family: SourceFamily,
+) -> RecordValidation:
+    """Valida todos los contratos explícitamente presentes de una familia."""
+    contracts = contracts_for_family(family)
+    if len(contracts) == 1:
+        return validate_record(values_by_name, contracts[0])
+
+    present_contracts = [
+        contract
+        for contract in contracts
+        if any(not _is_absent(values_by_name.get(spec.name)) for spec in contract.fields)
+    ]
+    if not present_contracts:
+        return validate_record(values_by_name, contracts[0])
+
+    for contract in present_contracts:
+        outcome = validate_record(values_by_name, contract)
+        if not outcome.conforming:
+            return outcome
     return RecordValidation(True, None, None)
 
 

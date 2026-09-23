@@ -19,7 +19,7 @@ from app.security.models import AuthenticatedPrincipal
 from app.security.repository import SecurityRepository
 from app.security.service import SecurityService
 from app.security.tokens import JwtService
-from app.validation.models import QuarantineState
+from app.validation.models import QuarantineCause, QuarantineState
 from app.validation.quarantine import QuarantineError
 from app.validation.repository import ValidationRepository
 from app.validation.service import TabularRecord, ValidationContext, ValidationService
@@ -27,6 +27,9 @@ from app.validation.service import TabularRecord, ValidationContext, ValidationS
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 _HEADERS = ("ID_Contrato", "Fecha_Solicitud", "Fecha_Firma", "Fecha_Vencimiento", "Estado_Revision")
+_AUDIT_LEGAL_MATTER_HEADERS = ("ID_Asunto", "Tipo_Asunto", "Estado", "Fecha")
+_AUDIT_INCIDENT_HEADERS = ("ID_Incidente", "Fecha_Evento", "Area", "Nivel_Severidad")
+_AUDIT_BOTH_HEADERS = _AUDIT_INCIDENT_HEADERS + _AUDIT_LEGAL_MATTER_HEADERS
 
 
 def _url() -> str:
@@ -111,6 +114,34 @@ def _seed_file_and_records(engine: sa.Engine, count: int) -> tuple[UUID, list[UU
     return file_id, record_ids
 
 
+def _seed_audit_file_and_records(engine: sa.Engine, count: int) -> tuple[UUID, list[UUID]]:
+    file_id = uuid4()
+    object_id = uuid4()
+    record_ids = [uuid4() for _ in range(count)]
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text("INSERT INTO app.stored_object (id, storage_kind, locator, sha256, mime_type, byte_size, original_name) VALUES (:id, 'FILESYSTEM', :locator, :sha, 'text/csv', 10, 'audit.csv')"),
+            {"id": object_id, "locator": f"objects/ab/{object_id}-audit.csv", "sha": bytes(32)},
+        )
+        connection.execute(
+            sa.text("""INSERT INTO app.ingest_file
+                (id, stored_object_id, source_family, exchange_format, state, operation_id, correlation_id,
+                 declared_extension, detected_format, format_classification, technical_result,
+                 declared_name, source_locator, source_revision, actor_identifier, content_sha256)
+                VALUES (:id, :object, 'AUDITORIA_INTERNA', 'CSV', 'COMPLETADO', :operation, :correlation,
+                        '.csv', 'CSV', 'SUPPORTED', 'ACCEPTED', 'audit.csv', :locator, 1, 'test', :sha)"""),
+            {"id": file_id, "object": object_id, "operation": uuid4(), "correlation": uuid4(), "locator": f"test/{file_id}/audit.csv", "sha": bytes(32)},
+        )
+        for index, record_id in enumerate(record_ids):
+            connection.execute(
+                sa.text("""INSERT INTO app.source_record
+                    (id, ingest_file_id, row_number, source_sheet, raw_payload, record_sha256, extraction_state)
+                    VALUES (:id, :file, :row, 'CSV', '{}'::jsonb, :sha, 'EXTRAIDO')"""),
+                {"id": record_id, "file": file_id, "row": index + 2, "sha": bytes(32)},
+            )
+    return file_id, record_ids
+
+
 def _invalid_record(position: int, source_record_id: UUID) -> TabularRecord:
     return TabularRecord(
         position=position,
@@ -123,6 +154,45 @@ def _invalid_record(position: int, source_record_id: UUID) -> TabularRecord:
             "Estado_Revision": "Pendiente",  # fuera de catálogo → cuarentena
         },
         width=5,
+    )
+
+
+def _audit_legal_matter_record(position: int, source_record_id: UUID, *, valid: bool) -> TabularRecord:
+    return TabularRecord(
+        position=position,
+        source_record_id=source_record_id,
+        values_by_name={
+            "ID_Asunto": f"A-{position}",
+            "Tipo_Asunto": "Auditoría" if valid else "Otro",
+            "Estado": "Abierto",
+            "Fecha": "2026-03-01",
+        },
+        width=4,
+    )
+
+
+def _audit_incident_record(position: int, source_record_id: UUID) -> TabularRecord:
+    return TabularRecord(
+        position=position,
+        source_record_id=source_record_id,
+        values_by_name={
+            "ID_Incidente": f"I-{position}",
+            "Fecha_Evento": "2026-03-01",
+            "Area": "Jurídica",
+            "Nivel_Severidad": "alto",
+        },
+        width=4,
+    )
+
+
+def _audit_both_record(position: int, source_record_id: UUID) -> TabularRecord:
+    incident = _audit_incident_record(position, source_record_id)
+    legal_matter = _audit_legal_matter_record(position, source_record_id, valid=True)
+    return TabularRecord(
+        position=position,
+        source_record_id=source_record_id,
+        values_by_name=incident.values_by_name | legal_matter.values_by_name,
+        width=8,
     )
 
 
@@ -225,4 +295,86 @@ def test_audit_failure_rolls_back_quarantine(database) -> None:
 
     with engine.connect() as connection:
         total = connection.execute(sa.text("SELECT count(*) FROM app.quarantine_item WHERE ingest_file_id = :id"), {"id": file_id}).scalar_one()
+    assert total == 0
+
+
+@pytest.mark.requires_db
+@pytest.mark.data_schema
+def test_audit_legal_matter_only_is_conforming_without_quarantine(database) -> None:
+    engine, service, principal, _ = database
+    cases = (
+        (_AUDIT_INCIDENT_HEADERS, _audit_incident_record),
+        (_AUDIT_LEGAL_MATTER_HEADERS, lambda position, record_id: _audit_legal_matter_record(position, record_id, valid=True)),
+        (_AUDIT_BOTH_HEADERS, _audit_both_record),
+    )
+    for headers, record_factory in cases:
+        file_id, record_ids = _seed_audit_file_and_records(engine, 1)
+        context = ValidationContext(operation_id=_namespace(), correlation_id=uuid4(), actor=principal)
+        result = service.validate(
+            file_id=file_id,
+            family=SourceFamily.INTERNAL_AUDIT,
+            headers=headers,
+            records=(record_factory(1, record_ids[0]),),
+            context=context,
+        )
+        assert result.conforming_positions == (1,)
+        with engine.connect() as connection:
+            total = connection.execute(
+                sa.text("SELECT count(*) FROM app.quarantine_item WHERE ingest_file_id = :id"),
+                {"id": file_id},
+            ).scalar_one()
+        assert total == 0
+
+
+@pytest.mark.requires_db
+@pytest.mark.data_schema
+def test_invalid_audit_legal_matter_creates_one_quarantine_and_audit(database) -> None:
+    engine, service, principal, _ = database
+    file_id, record_ids = _seed_audit_file_and_records(engine, 1)
+    context = ValidationContext(operation_id=_namespace(), correlation_id=uuid4(), actor=principal)
+    result = service.validate(
+        file_id=file_id,
+        family=SourceFamily.INTERNAL_AUDIT,
+        headers=_AUDIT_LEGAL_MATTER_HEADERS,
+        records=(_audit_legal_matter_record(1, record_ids[0], valid=False),),
+        context=context,
+    )
+    assert result.quarantined == ((1, QuarantineCause.OUT_OF_CATALOG),)
+    with engine.connect() as connection:
+        quarantine_count = connection.execute(
+            sa.text("SELECT count(*) FROM app.quarantine_item WHERE ingest_file_id = :id"),
+            {"id": file_id},
+        ).scalar_one()
+        audit_count = connection.execute(
+            sa.text("SELECT count(*) FROM audit.event WHERE correlation_id = :id AND action = 'QUARANTINE_CREATED'"),
+            {"id": context.correlation_id},
+        ).scalar_one()
+    assert quarantine_count == 1
+    assert audit_count == 1
+
+
+@pytest.mark.requires_db
+@pytest.mark.data_schema
+def test_audit_failure_rolls_back_audit_quarantine_mutation(database) -> None:
+    engine, service, principal, _ = database
+    file_id, record_ids = _seed_audit_file_and_records(engine, 1)
+    context = ValidationContext(operation_id=_namespace(), correlation_id=uuid4(), actor=principal)
+    original = service.repository.write_audit_event
+    service.repository.write_audit_event = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("audit failure"))
+    try:
+        with pytest.raises(RuntimeError):
+            service.validate(
+                file_id=file_id,
+                family=SourceFamily.INTERNAL_AUDIT,
+                headers=_AUDIT_LEGAL_MATTER_HEADERS,
+                records=(_audit_legal_matter_record(1, record_ids[0], valid=False),),
+                context=context,
+            )
+    finally:
+        service.repository.write_audit_event = original
+    with engine.connect() as connection:
+        total = connection.execute(
+            sa.text("SELECT count(*) FROM app.quarantine_item WHERE ingest_file_id = :id"),
+            {"id": file_id},
+        ).scalar_one()
     assert total == 0

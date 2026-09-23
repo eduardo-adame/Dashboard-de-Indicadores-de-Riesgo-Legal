@@ -18,6 +18,7 @@ class InMemoryValidationRepository:
         self.items: dict[UUID, QuarantineItem] = {}
         self.transitions: list[object] = []
         self.audit_events: list[dict] = []
+        self.family = SourceFamily.CONTRACTS_DOCUMENTS
 
     @contextmanager
     def transaction(self):
@@ -53,7 +54,7 @@ class InMemoryValidationRepository:
         self.transitions.append(transition)
 
     def family_for_quarantine(self, connection, item: QuarantineItem) -> SourceFamily:
-        return SourceFamily.CONTRACTS_DOCUMENTS
+        return self.family
 
     def write_audit_event(self, connection, **kwargs) -> None:
         self.audit_events.append(kwargs)
@@ -73,6 +74,7 @@ def _context() -> ValidationContext:
 
 
 _HEADERS = ("ID_Contrato", "Fecha_Solicitud", "Fecha_Firma", "Fecha_Vencimiento", "Estado_Revision")
+_AUDIT_LEGAL_MATTER_HEADERS = ("ID_Asunto", "Tipo_Asunto", "Estado", "Fecha")
 
 
 def _record(position: int, *, valid: bool) -> TabularRecord:
@@ -84,6 +86,20 @@ def _record(position: int, *, valid: bool) -> TabularRecord:
         "Estado_Revision": "No iniciado" if valid else "Pendiente",
     }
     return TabularRecord(position=position, source_record_id=uuid4(), values_by_name=values, width=5)
+
+
+def _audit_legal_matter_record(position: int, *, valid: bool) -> TabularRecord:
+    return TabularRecord(
+        position=position,
+        source_record_id=uuid4(),
+        values_by_name={
+            "ID_Asunto": f"A-{position}",
+            "Tipo_Asunto": "Auditoría" if valid else "Otro",
+            "Estado": "Abierto",
+            "Fecha": "2026-03-01",
+        },
+        width=4,
+    )
 
 
 def _service(repository: InMemoryValidationRepository) -> ValidationService:
@@ -189,3 +205,118 @@ def test_discarded_item_cannot_be_reinjected() -> None:
     service.discard(item_id=item.id, justification="no aplica", context=context)
     with pytest.raises(QuarantineError):
         service.reinject(item_id=item.id, corrected_payload=item.original_payload or {}, context=context)
+
+
+def test_audit_legal_matter_only_position_is_reported_as_conforming() -> None:
+    repository = InMemoryValidationRepository()
+    service = _service(repository)
+    result = service.validate(
+        file_id=uuid4(),
+        family=SourceFamily.INTERNAL_AUDIT,
+        headers=_AUDIT_LEGAL_MATTER_HEADERS,
+        records=(_audit_legal_matter_record(1, valid=True),),
+        context=_context(),
+    )
+    assert result.conforming_positions == (1,)
+    assert result.quarantined == ()
+
+
+def test_validation_service_uses_composite_contracts_for_internal_audit(monkeypatch) -> None:
+    import app.validation.service as service_module
+
+    repository = InMemoryValidationRepository()
+    service = _service(repository)
+    structural_calls: list[SourceFamily] = []
+    record_calls: list[SourceFamily] = []
+    original_structural = service_module.validate_structure_for_family
+    original_record = service_module.validate_record_for_family
+
+    def structural(headers, rows, family):
+        structural_calls.append(family)
+        return original_structural(headers, rows, family)
+
+    def record(values, family):
+        record_calls.append(family)
+        return original_record(values, family)
+
+    monkeypatch.setattr(service_module, "validate_structure_for_family", structural)
+    monkeypatch.setattr(service_module, "validate_record_for_family", record)
+    service.validate(
+        file_id=uuid4(),
+        family=SourceFamily.INTERNAL_AUDIT,
+        headers=_AUDIT_LEGAL_MATTER_HEADERS,
+        records=(_audit_legal_matter_record(1, valid=True),),
+        context=_context(),
+    )
+    assert structural_calls == [SourceFamily.INTERNAL_AUDIT]
+    assert record_calls == [SourceFamily.INTERNAL_AUDIT]
+
+
+def test_audit_legal_matter_reinjection_can_become_reinjected() -> None:
+    repository = InMemoryValidationRepository()
+    repository.family = SourceFamily.INTERNAL_AUDIT
+    service = _service(repository)
+    context = _context()
+    service.validate(
+        file_id=uuid4(),
+        family=SourceFamily.INTERNAL_AUDIT,
+        headers=_AUDIT_LEGAL_MATTER_HEADERS,
+        records=(_audit_legal_matter_record(1, valid=False),),
+        context=context,
+    )
+    item = next(iter(repository.items.values()))
+    updated = service.reinject(
+        item_id=item.id,
+        corrected_payload={
+            "ID_Asunto": "A-1",
+            "Tipo_Asunto": "Auditoría",
+            "Estado": "Abierto",
+            "Fecha": "2026-03-01",
+        },
+        context=context,
+    )
+    assert updated.state == QuarantineState.REINYECTADO
+
+
+def test_audit_multiple_invalid_contracts_create_one_quarantine_item() -> None:
+    repository = InMemoryValidationRepository()
+    service = _service(repository)
+    record = TabularRecord(
+        position=1,
+        source_record_id=uuid4(),
+        values_by_name={
+            "ID_Incidente": "I-1",
+            "Fecha_Evento": "2026-03-01",
+            "Area": "Cumplimiento",
+            "Nivel_Severidad": "crítico",
+            "ID_Asunto": "A-1",
+            "Tipo_Asunto": "Otro",
+            "Estado": "Abierto",
+            "Fecha": "2026-03-01",
+        },
+        width=8,
+    )
+    result = service.validate(
+        file_id=uuid4(),
+        family=SourceFamily.INTERNAL_AUDIT,
+        headers=tuple(record.values_by_name),
+        records=(record,),
+        context=_context(),
+    )
+    assert result.quarantined[0][1] == QuarantineCause.OUT_OF_CATALOG
+    assert len(repository.items) == 1
+
+
+def test_invalid_audit_row_uses_existing_unified_quarantine() -> None:
+    repository = InMemoryValidationRepository()
+    service = _service(repository)
+    result = service.validate(
+        file_id=uuid4(),
+        family=SourceFamily.INTERNAL_AUDIT,
+        headers=_AUDIT_LEGAL_MATTER_HEADERS,
+        records=(_audit_legal_matter_record(1, valid=False),),
+        context=_context(),
+    )
+    assert result.quarantined == ((1, QuarantineCause.OUT_OF_CATALOG),)
+    item = next(iter(repository.items.values()))
+    assert item.cause == QuarantineCause.OUT_OF_CATALOG
