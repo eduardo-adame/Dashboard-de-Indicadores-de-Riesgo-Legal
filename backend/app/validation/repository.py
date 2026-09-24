@@ -7,6 +7,7 @@ redefine esa política.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 import json
 from typing import Iterator
 from uuid import UUID
@@ -15,7 +16,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.ingestion.models import SourceFamily
-from app.validation.models import QuarantineCause, QuarantineState
+from app.validation.models import QuarantineCause, QuarantineState, ValidationInvocationError
 from app.validation.quarantine import QuarantineItem, QuarantineTransition
 
 
@@ -133,6 +134,49 @@ class ValidationRepository:
             return SourceFamily.CONTRACTS_DOCUMENTS
         return SourceFamily(str(row["source_family"]))
 
+    @staticmethod
+    def family_for_file(connection: psycopg.Connection, file_id: UUID) -> SourceFamily:
+        row = connection.execute(
+            "SELECT source_family FROM app.ingest_file WHERE id = %s", (file_id,)
+        ).fetchone()
+        if row is None:
+            raise ValidationInvocationError("archivo de ingesta inexistente")
+        return SourceFamily(str(row["source_family"]))
+
+    @staticmethod
+    def source_record_matches(
+        connection: psycopg.Connection, *, source_record_id: UUID, file_id: UUID, position: int
+    ) -> bool:
+        row = connection.execute(
+            """SELECT 1 FROM app.source_record
+                 WHERE id = %s AND ingest_file_id = %s AND row_number = %s""",
+            (source_record_id, file_id, position),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def provenance_for_quarantine(
+        connection: psycopg.Connection, item: QuarantineItem
+    ) -> "SourceRecordProvenance":
+        if item.source_record_id is None or item.ingest_file_id is None:
+            raise ValidationInvocationError("cuarentena sin procedencia de registro")
+        row = connection.execute(
+            """SELECT source_record.id AS source_record_id, source_record.ingest_file_id,
+                      source_record.row_number, ingest_file.source_family
+                 FROM app.source_record
+                 JOIN app.ingest_file ON ingest_file.id = source_record.ingest_file_id
+                WHERE source_record.id = %s AND source_record.ingest_file_id = %s""",
+            (item.source_record_id, item.ingest_file_id),
+        ).fetchone()
+        if row is None or row["row_number"] is None:
+            raise ValidationInvocationError("procedencia persistida de cuarentena inválida")
+        return SourceRecordProvenance(
+            source_record_id=row["source_record_id"],
+            ingest_file_id=row["ingest_file_id"],
+            position=int(row["row_number"]),
+            family=SourceFamily(str(row["source_family"])),
+        )
+
     # -- auditoría ----------------------------------------------------------
     def write_audit_event(self, connection, **kwargs) -> None:
         """Delega en la frontera de auditoría vigente."""
@@ -185,3 +229,11 @@ def _row_to_item(row: dict[str, object]) -> QuarantineItem:
         discard_justification=row["discard_justification"],
         created_at=row["created_at"],
     )
+
+
+@dataclass(frozen=True)
+class SourceRecordProvenance:
+    source_record_id: UUID
+    ingest_file_id: UUID
+    position: int
+    family: SourceFamily

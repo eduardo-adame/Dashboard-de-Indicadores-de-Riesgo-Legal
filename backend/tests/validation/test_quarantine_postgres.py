@@ -109,7 +109,7 @@ def _seed_file_and_records(engine: sa.Engine, count: int) -> tuple[UUID, list[UU
                 sa.text("""INSERT INTO app.source_record
                     (id, ingest_file_id, row_number, source_sheet, raw_payload, record_sha256, extraction_state)
                     VALUES (:id, :file, :row, 'CSV', '{}'::jsonb, :sha, 'EXTRAIDO')"""),
-                {"id": record_id, "file": file_id, "row": index + 2, "sha": bytes(32)},
+                {"id": record_id, "file": file_id, "row": index + 1, "sha": bytes(32)},
             )
     return file_id, record_ids
 
@@ -137,7 +137,7 @@ def _seed_audit_file_and_records(engine: sa.Engine, count: int) -> tuple[UUID, l
                 sa.text("""INSERT INTO app.source_record
                     (id, ingest_file_id, row_number, source_sheet, raw_payload, record_sha256, extraction_state)
                     VALUES (:id, :file, :row, 'CSV', '{}'::jsonb, :sha, 'EXTRAIDO')"""),
-                {"id": record_id, "file": file_id, "row": index + 2, "sha": bytes(32)},
+                {"id": record_id, "file": file_id, "row": index + 1, "sha": bytes(32)},
             )
     return file_id, record_ids
 
@@ -324,6 +324,30 @@ def test_audit_legal_matter_only_is_conforming_without_quarantine(database) -> N
                 {"id": file_id},
             ).scalar_one()
         assert total == 0
+
+
+@pytest.mark.requires_db
+@pytest.mark.data_schema
+def test_validated_snapshot_source_record_identity_is_verified_from_database(database) -> None:
+    engine, service, principal, _ = database
+    file_id, record_ids = _seed_file_and_records(engine, 1)
+    context = ValidationContext(operation_id=_namespace(), correlation_id=uuid4(), actor=principal)
+    record = TabularRecord(
+        position=1,
+        source_record_id=record_ids[0],
+        values_by_name={
+            "ID_Contrato": "C-1", "Fecha_Solicitud": "2026-01-10",
+            "Fecha_Firma": "2026-01-15", "Fecha_Vencimiento": "2026-06-30",
+            "Estado_Revision": "No iniciado",
+        },
+        width=5,
+    )
+    result = service.validate(
+        file_id=file_id, family=SourceFamily.CONTRACTS_DOCUMENTS,
+        headers=_HEADERS, records=(record,), context=context,
+    )
+    assert result.validated_records[0].source_record_id == record_ids[0]
+    assert result.validated_records[0].position == 1
 
 
 @pytest.mark.requires_db

@@ -5,6 +5,7 @@ delimitadores ni a parsear el archivo: aplica el contrato de datos del SRS.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from uuid import UUID, uuid5
@@ -65,7 +66,7 @@ def _parse_decimal(value: object) -> Decimal | None:
         return None
 
 
-def validate_record(values_by_name: dict[str, object], contract: DataContract) -> RecordValidation:
+def validate_record(values_by_name: Mapping[str, object], contract: DataContract) -> RecordValidation:
     """Valida un registro contra el contrato de datos de su familia."""
     # 1. Campos obligatorios y tipos.
     for spec in contract.fields:
@@ -97,7 +98,7 @@ def validate_record(values_by_name: dict[str, object], contract: DataContract) -
 
 
 def validate_record_for_family(
-    values_by_name: dict[str, object],
+    values_by_name: Mapping[str, object],
     family: SourceFamily,
 ) -> RecordValidation:
     """Valida todos los contratos explícitamente presentes de una familia."""

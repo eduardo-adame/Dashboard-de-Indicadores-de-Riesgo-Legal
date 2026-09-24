@@ -8,7 +8,14 @@ import pytest
 
 from app.ingestion.models import SourceFamily
 from app.security.models import AuthenticatedPrincipal
-from app.validation.models import QuarantineCause, QuarantineState
+from app.validation.models import (
+    QuarantineCause,
+    QuarantineState,
+    StructuralValidation,
+    ValidatedTabularRecord,
+    ValidationInvocationError,
+    ValidationResult,
+)
 from app.validation.quarantine import QuarantineError, QuarantineItem
 from app.validation.service import TabularRecord, ValidationContext, ValidationService
 
@@ -19,6 +26,8 @@ class InMemoryValidationRepository:
         self.transitions: list[object] = []
         self.audit_events: list[dict] = []
         self.family = SourceFamily.CONTRACTS_DOCUMENTS
+        self.bindings: dict[UUID, tuple[UUID, int]] = {}
+        self.reject_bindings = False
 
     @contextmanager
     def transaction(self):
@@ -55,6 +64,21 @@ class InMemoryValidationRepository:
 
     def family_for_quarantine(self, connection, item: QuarantineItem) -> SourceFamily:
         return self.family
+
+    def family_for_file(self, connection, file_id: UUID) -> SourceFamily:
+        return self.family
+
+    def source_record_matches(self, connection, *, source_record_id, file_id, position) -> bool:
+        if self.reject_bindings:
+            return False
+        self.bindings[source_record_id] = (file_id, position)
+        return True
+
+    def provenance_for_quarantine(self, connection, item: QuarantineItem):
+        from app.validation.repository import SourceRecordProvenance
+
+        file_id, position = self.bindings[item.source_record_id]
+        return SourceRecordProvenance(item.source_record_id, file_id, position, self.family)
 
     def write_audit_event(self, connection, **kwargs) -> None:
         self.audit_events.append(kwargs)
@@ -141,6 +165,8 @@ def test_structural_rejection_creates_no_quarantine_items() -> None:
     )
     assert result.file_rejected is True
     assert not repository.items
+    assert result.validated_records == ()
+    assert result.conforming_positions == ()
 
 
 def test_reinject_valid_correction_moves_to_reinjected() -> None:
@@ -178,6 +204,22 @@ def test_reinject_invalid_correction_keeps_pending() -> None:
     assert updated.state == QuarantineState.PENDIENTE
 
 
+def test_reinjection_pending_has_no_validated_snapshot() -> None:
+    repository = InMemoryValidationRepository()
+    service = _service(repository)
+    context = _context()
+    service.validate(
+        file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS, headers=_HEADERS,
+        records=(_record(1, valid=False),), context=context,
+    )
+    item = next(iter(repository.items.values()))
+    result = service.reinject_with_validated_record(
+        item_id=item.id, corrected_payload=item.original_payload or {}, context=context
+    )
+    assert result.quarantine_item.state == QuarantineState.PENDIENTE
+    assert result.validated_record is None
+
+
 def test_discard_requires_non_empty_justification() -> None:
     repository = InMemoryValidationRepository()
     service = _service(repository)
@@ -209,6 +251,7 @@ def test_discarded_item_cannot_be_reinjected() -> None:
 
 def test_audit_legal_matter_only_position_is_reported_as_conforming() -> None:
     repository = InMemoryValidationRepository()
+    repository.family = SourceFamily.INTERNAL_AUDIT
     service = _service(repository)
     result = service.validate(
         file_id=uuid4(),
@@ -225,6 +268,7 @@ def test_validation_service_uses_composite_contracts_for_internal_audit(monkeypa
     import app.validation.service as service_module
 
     repository = InMemoryValidationRepository()
+    repository.family = SourceFamily.INTERNAL_AUDIT
     service = _service(repository)
     structural_calls: list[SourceFamily] = []
     record_calls: list[SourceFamily] = []
@@ -280,6 +324,7 @@ def test_audit_legal_matter_reinjection_can_become_reinjected() -> None:
 
 def test_audit_multiple_invalid_contracts_create_one_quarantine_item() -> None:
     repository = InMemoryValidationRepository()
+    repository.family = SourceFamily.INTERNAL_AUDIT
     service = _service(repository)
     record = TabularRecord(
         position=1,
@@ -309,6 +354,7 @@ def test_audit_multiple_invalid_contracts_create_one_quarantine_item() -> None:
 
 def test_invalid_audit_row_uses_existing_unified_quarantine() -> None:
     repository = InMemoryValidationRepository()
+    repository.family = SourceFamily.INTERNAL_AUDIT
     service = _service(repository)
     result = service.validate(
         file_id=uuid4(),
@@ -318,5 +364,201 @@ def test_invalid_audit_row_uses_existing_unified_quarantine() -> None:
         context=_context(),
     )
     assert result.quarantined == ((1, QuarantineCause.OUT_OF_CATALOG),)
+    assert result.validated_records == ()
     item = next(iter(repository.items.values()))
     assert item.cause == QuarantineCause.OUT_OF_CATALOG
+
+
+def test_validation_result_contains_exact_validated_record_snapshot() -> None:
+    repository = InMemoryValidationRepository()
+    record = _record(1, valid=True)
+    result = _service(repository).validate(
+        file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS,
+        headers=_HEADERS, records=(record,), context=_context(),
+    )
+    snapshot = result.validated_records[0]
+    assert snapshot.source_record_id == record.source_record_id
+    assert snapshot.position == record.position
+    assert snapshot.family == SourceFamily.CONTRACTS_DOCUMENTS
+    assert dict(snapshot.values_by_name) == record.values_by_name
+
+
+def test_validated_records_have_bijection_with_conforming_positions() -> None:
+    repository = InMemoryValidationRepository()
+    result = _service(repository).validate(
+        file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS, headers=_HEADERS,
+        records=(_record(1, valid=True), _record(2, valid=False), _record(3, valid=True)), context=_context(),
+    )
+    assert tuple(record.position for record in result.validated_records) == result.conforming_positions
+    assert len(result.validated_records) == len(result.conforming_positions)
+
+
+def test_mutating_original_nested_values_does_not_change_snapshot() -> None:
+    repository = InMemoryValidationRepository()
+    record = _record(1, valid=True)
+    record.values_by_name["nested"] = {"items": ["before"]}
+    result = _service(repository).validate(
+        file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS,
+        headers=_HEADERS, records=(record,), context=_context(),
+    )
+    record.values_by_name["nested"]["items"].append("after")
+    snapshot = result.validated_records[0]
+    assert snapshot.values_by_name["nested"]["items"] == ("before",)
+    with pytest.raises(TypeError):
+        snapshot.values_by_name["new"] = "value"
+
+
+def test_snapshot_failure_never_leaves_position_conforming() -> None:
+    repository = InMemoryValidationRepository()
+    record = _record(1, valid=True)
+    cycle: list[object] = []
+    cycle.append(cycle)
+    record.values_by_name["nested"] = cycle
+    with pytest.raises(ValidationInvocationError):
+        _service(repository).validate(
+            file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS,
+            headers=_HEADERS, records=(record,), context=_context(),
+        )
+    assert repository.items == {}
+    assert repository.transitions == []
+    assert repository.audit_events == []
+
+
+def test_legacy_validation_result_equality_behavior_is_preserved() -> None:
+    structural = StructuralValidation(True, None)
+    legacy = ValidationResult("file", SourceFamily.CONTRACTS_DOCUMENTS, structural, (1,), ())
+    current = ValidationResult(
+        "file", SourceFamily.CONTRACTS_DOCUMENTS, structural, (1,), (),
+        (ValidatedTabularRecord(uuid4(), SourceFamily.CONTRACTS_DOCUMENTS, 1, {}),),
+    )
+    assert legacy == current
+
+
+def test_family_mismatch_fails_without_quarantining_records() -> None:
+    repository = InMemoryValidationRepository()
+    with pytest.raises(ValidationInvocationError):
+        _service(repository).validate(
+            file_id=uuid4(), family=SourceFamily.INTERNAL_AUDIT,
+            headers=_AUDIT_LEGAL_MATTER_HEADERS,
+            records=(_audit_legal_matter_record(1, valid=True),), context=_context(),
+        )
+    assert repository.items == {}
+
+
+def test_duplicate_input_positions_fail_without_publishing_validation_outcome() -> None:
+    repository = InMemoryValidationRepository()
+    with pytest.raises(ValidationInvocationError):
+        _service(repository).validate(
+            file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS, headers=_HEADERS,
+            records=(_record(1, valid=True), _record(1, valid=False)), context=_context(),
+        )
+    assert repository.items == {}
+
+
+def test_validation_rejects_source_record_identity_not_matching_file_and_position() -> None:
+    repository = InMemoryValidationRepository()
+    repository.reject_bindings = True
+    with pytest.raises(ValidationInvocationError):
+        _service(repository).validate(
+            file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS,
+            headers=_HEADERS, records=(_record(1, valid=True),), context=_context(),
+        )
+    assert repository.items == {}
+
+
+def test_legacy_reinject_return_contract_is_unchanged() -> None:
+    repository = InMemoryValidationRepository()
+    service = _service(repository)
+    context = _context()
+    service.validate(file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS, headers=_HEADERS,
+                     records=(_record(1, valid=False),), context=context)
+    item = next(iter(repository.items.values()))
+    assert isinstance(service.reinject(item_id=item.id, corrected_payload=_record(1, valid=True).values_by_name, context=context), QuarantineItem)
+
+
+def test_reinject_with_validated_record_returns_authoritative_snapshot() -> None:
+    repository = InMemoryValidationRepository()
+    service = _service(repository)
+    context = _context()
+    service.validate(file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS, headers=_HEADERS,
+                     records=(_record(4, valid=False),), context=context)
+    item = next(iter(repository.items.values()))
+    result = service.reinject_with_validated_record(
+        item_id=item.id, corrected_payload=_record(4, valid=True).values_by_name, context=context
+    )
+    assert result.quarantine_item.state == QuarantineState.REINYECTADO
+    assert result.validated_record is not None
+    assert result.validated_record.source_record_id == item.source_record_id
+    assert result.validated_record.position == 4
+
+
+def test_validated_snapshot_preserves_family() -> None:
+    repository = InMemoryValidationRepository()
+    result = _service(repository).validate(
+        file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS,
+        headers=_HEADERS, records=(_record(1, valid=True),), context=_context(),
+    )
+    assert result.validated_records[0].family == SourceFamily.CONTRACTS_DOCUMENTS
+
+
+def test_validated_snapshot_preserves_source_record_identity() -> None:
+    repository = InMemoryValidationRepository()
+    record = _record(1, valid=True)
+    result = _service(repository).validate(
+        file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS,
+        headers=_HEADERS, records=(record,), context=_context(),
+    )
+    assert result.validated_records[0].source_record_id == record.source_record_id
+
+
+def test_validated_snapshot_preserves_position() -> None:
+    repository = InMemoryValidationRepository()
+    result = _service(repository).validate(
+        file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS,
+        headers=_HEADERS, records=(_record(7, valid=True),), context=_context(),
+    )
+    assert result.validated_records[0].position == 7
+
+
+def test_mutating_original_record_after_validation_does_not_change_snapshot() -> None:
+    repository = InMemoryValidationRepository()
+    record = _record(1, valid=True)
+    result = _service(repository).validate(
+        file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS,
+        headers=_HEADERS, records=(record,), context=_context(),
+    )
+    record.values_by_name["Estado_Revision"] = "Pendiente"
+    assert result.validated_records[0].values_by_name["Estado_Revision"] == "No iniciado"
+
+
+def test_validated_snapshot_values_are_immutable() -> None:
+    repository = InMemoryValidationRepository()
+    result = _service(repository).validate(
+        file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS,
+        headers=_HEADERS, records=(_record(1, valid=True),), context=_context(),
+    )
+    with pytest.raises(TypeError):
+        result.validated_records[0].values_by_name["ID_Contrato"] = "C-2"
+
+
+def test_existing_conforming_positions_contract_is_preserved() -> None:
+    repository = InMemoryValidationRepository()
+    result = _service(repository).validate(
+        file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS, headers=_HEADERS,
+        records=(_record(1, valid=True), _record(2, valid=False)), context=_context(),
+    )
+    assert result.conforming_positions == (1,)
+
+
+def test_reinjection_produces_validated_snapshot_for_reinjected_record() -> None:
+    repository = InMemoryValidationRepository()
+    service = _service(repository)
+    context = _context()
+    service.validate(file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS, headers=_HEADERS,
+                     records=(_record(2, valid=False),), context=context)
+    item = next(iter(repository.items.values()))
+    result = service.reinject_with_validated_record(
+        item_id=item.id, corrected_payload=_record(2, valid=True).values_by_name, context=context
+    )
+    assert result.validated_record is not None
+    assert result.quarantine_item.state == QuarantineState.REINYECTADO

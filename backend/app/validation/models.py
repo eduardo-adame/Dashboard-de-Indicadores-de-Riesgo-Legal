@@ -1,8 +1,10 @@
 """Tipos y contratos internos del módulo de validación."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from enum import StrEnum
+from uuid import UUID
 
 from app.ingestion.models import SourceFamily
 
@@ -40,6 +42,10 @@ class QuarantineState(StrEnum):
 class RecordDisposition(StrEnum):
     CONFORME = "CONFORME"
     CUARENTENA = "CUARENTENA"
+
+
+class ValidationInvocationError(RuntimeError):
+    """La invocación no coincide con la procedencia persistida."""
 
 
 @dataclass(frozen=True)
@@ -98,7 +104,20 @@ class ValidationResult:
     structural: StructuralValidation
     conforming_positions: tuple[int, ...]
     quarantined: tuple[tuple[int, QuarantineCause], ...]
+    validated_records: tuple["ValidatedTabularRecord", ...] = field(
+        default=(), compare=False, repr=False
+    )
 
     @property
     def file_rejected(self) -> bool:
         return not self.structural.conforming
+
+
+@dataclass(frozen=True)
+class ValidatedTabularRecord:
+    """Snapshot inmutable del registro exacto que superó la validación."""
+
+    source_record_id: UUID
+    family: SourceFamily
+    position: int
+    values_by_name: Mapping[str, object]
