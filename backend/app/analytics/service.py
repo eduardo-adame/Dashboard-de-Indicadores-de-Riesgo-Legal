@@ -18,7 +18,7 @@ from app.security.models import SecurityError
 _RUN_NAMESPACE = UUID("ef79661e-3c23-4be1-8e8e-ff9dc54f5966")
 _ROUTING = {
     "CONTRATO": ("KPI-RC-01", "KPI-RC-03"), "LITIGIO": ("KPI-LI-01", "KPI-LI-05"),
-    "OBLIGACION": ("KPI-CN-02", "KPI-CN-03"), "INCIDENTE": ("KPI-CN-03",), "ASUNTO": ("KPI-EO-01",),
+    "OBLIGACION": ("KPI-CN-02",), "INCIDENTE": ("KPI-CN-03",), "ASUNTO": ("KPI-EO-01",),
 }
 
 

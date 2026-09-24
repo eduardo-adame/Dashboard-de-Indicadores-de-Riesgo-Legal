@@ -90,5 +90,9 @@ def test_completed_retry_has_no_new_effect_and_invalid_snapshot_period_is_reject
 
 def test_projection_routing_only_accepts_effective_incorporation():
     def projection(entity: str, required: bool): return ProjectionResult(entity, "id", "INCORPORADO" if required else "IDEMPOTENTE", b"x" * 32, uuid4(), uuid4(), uuid4(), required)
-    assert requested_kpis_for_projection((projection("CONTRATO", True), projection("LITIGIO", False))) == ("KPI-RC-01", "KPI-RC-03")
-    assert requested_kpis_for_projection((projection("OBLIGACION", True),)) == ("KPI-CN-02", "KPI-CN-03")
+    assert requested_kpis_for_projection((projection("CONTRATO", True),)) == ("KPI-RC-01", "KPI-RC-03")
+    assert requested_kpis_for_projection((projection("LITIGIO", True),)) == ("KPI-LI-01", "KPI-LI-05")
+    assert requested_kpis_for_projection((projection("OBLIGACION", True),)) == ("KPI-CN-02",)
+    assert requested_kpis_for_projection((projection("INCIDENTE", True),)) == ("KPI-CN-03",)
+    assert requested_kpis_for_projection((projection("ASUNTO", True),)) == ("KPI-EO-01",)
+    assert requested_kpis_for_projection((projection("CONTRATO", False),)) == ()
