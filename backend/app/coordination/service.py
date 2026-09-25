@@ -84,10 +84,11 @@ class CoordinationService:
             dispatch_id = dispatch.id
             operation_id = dispatch.operation_id
             target_value = target.value
+            persisted_correlation_id = dispatch.correlation_id
 
         # Procesamiento downstream: SIN transacción de coordinación abierta.
         try:
-            result_id = self._run_downstream(target_value, file_id, operation_id, correlation_id, actor)
+            result_id = self._run_downstream(target_value, file_id, operation_id, persisted_correlation_id, actor)
         except Exception as exc:  # noqa: BLE001 - se propaga tras registrar el fallo
             with self.repository.transaction() as connection:
                 self.repository.fail(connection, dispatch_id, safe_cause_code=exc.__class__.__name__.upper())

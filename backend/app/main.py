@@ -25,6 +25,7 @@ from app.db import check_database
 from app.embeddings import EmbeddingUnavailableError, get_embedding_service
 from app.ingestion.api import router as ingestion_router
 from app.security.api import router as security_router
+from app.validation.api import router as validation_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,6 +78,7 @@ app.add_middleware(
 app.include_router(security_router)
 app.include_router(ingestion_router)
 app.include_router(coordination_router)
+app.include_router(validation_router)
 
 
 @app.get("/health", tags=["health"])

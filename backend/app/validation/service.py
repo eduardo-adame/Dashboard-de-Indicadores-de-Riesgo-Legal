@@ -198,59 +198,94 @@ class ValidationService:
             capability=capability,
         )
 
+    def reinject_with_validated_record_in_transaction(
+        self,
+        connection,
+        *,
+        item_id: UUID,
+        corrected_payload: dict[str, object],
+        context: ValidationContext,
+        capability: str = "quarantine.reinject",
+    ) -> ReinjectionValidationResult:
+        """Ejecuta la reinyección sobre una transacción de aplicación existente."""
+        return self._reinject_core_in_transaction(
+            connection,
+            item_id=item_id,
+            corrected_payload=corrected_payload,
+            context=context,
+            capability=capability,
+        )
+
     def _reinject_core(
         self, *, item_id: UUID, corrected_payload: dict[str, object], context: ValidationContext,
         capability: str,
     ) -> ReinjectionValidationResult:
         with self.repository.transaction() as connection:
-            self._authorize(connection, context, capability)
-            item = self.repository.load_quarantine(connection, item_id, for_update=True)
-            if item is None:
-                raise QuarantineError("elemento de cuarentena inexistente")
-            candidate = _reinject(item, corrected_payload)
-            provenance = self.repository.provenance_for_quarantine(connection, item)
-            try:
-                frozen_values = _freeze_mapping(corrected_payload)
-            except _SnapshotFreezeError:
-                frozen_values = None
-                outcome = validate_record_for_family({}, provenance.family)
-                outcome = outcome.__class__(False, QuarantineCause.INVALID_TYPE)
-            else:
-                outcome = validate_record_for_family(frozen_values, provenance.family)
-            if outcome.conforming:
-                updated = mark_reinjected(candidate)
-                snapshot = ValidatedTabularRecord(
-                    source_record_id=provenance.source_record_id,
-                    family=provenance.family,
-                    position=provenance.position,
-                    values_by_name=frozen_values,
-                )
-            else:
-                updated = keep_pending(candidate, outcome.cause, _json_compatible_or_raise(corrected_payload))
-                snapshot = None
-            self.repository.update_quarantine(connection, updated)
-            self.repository.insert_transition(
+            return self._reinject_core_in_transaction(
                 connection,
-                QuarantineTransition(
-                    item_id=item.id,
-                    from_state=item.state,
-                    to_state=updated.state,
-                    operation_id=context.operation_id,
-                    correlation_id=context.correlation_id,
-                    actor_identifier=context.actor.username,
-                ),
+                item_id=item_id,
+                corrected_payload=corrected_payload,
+                context=context,
+                capability=capability,
             )
-            self.repository.write_audit_event(
-                connection,
-                actor=context.actor,
-                action="QUARANTINE_REINJECT",
-                resource_type="QUARANTINE_ITEM",
-                resource_identifier=str(item.id),
-                result=updated.state.value.upper(),
+
+    def _reinject_core_in_transaction(
+        self,
+        connection,
+        *,
+        item_id: UUID,
+        corrected_payload: dict[str, object],
+        context: ValidationContext,
+        capability: str,
+    ) -> ReinjectionValidationResult:
+        self._authorize(connection, context, capability)
+        item = self.repository.load_quarantine(connection, item_id, for_update=True)
+        if item is None:
+            raise QuarantineError("elemento de cuarentena inexistente")
+        candidate = _reinject(item, corrected_payload)
+        provenance = self.repository.provenance_for_quarantine(connection, item)
+        try:
+            frozen_values = _freeze_mapping(corrected_payload)
+        except _SnapshotFreezeError:
+            frozen_values = None
+            outcome = validate_record_for_family({}, provenance.family)
+            outcome = outcome.__class__(False, QuarantineCause.INVALID_TYPE)
+        else:
+            outcome = validate_record_for_family(frozen_values, provenance.family)
+        if outcome.conforming:
+            updated = mark_reinjected(candidate)
+            snapshot = ValidatedTabularRecord(
+                source_record_id=provenance.source_record_id,
+                family=provenance.family,
+                position=provenance.position,
+                values_by_name=frozen_values,
+            )
+        else:
+            updated = keep_pending(candidate, outcome.cause, _json_compatible_or_raise(corrected_payload))
+            snapshot = None
+        self.repository.update_quarantine(connection, updated)
+        self.repository.insert_transition(
+            connection,
+            QuarantineTransition(
+                item_id=item.id,
+                from_state=item.state,
+                to_state=updated.state,
+                operation_id=context.operation_id,
                 correlation_id=context.correlation_id,
-                safe_cause_code=None if outcome.conforming else outcome.cause.value,
-            )
-            return ReinjectionValidationResult(updated, snapshot)
+                actor_identifier=context.actor.username,
+            ),
+        )
+        self.repository.write_audit_event(
+            connection,
+            actor=context.actor,
+            action="QUARANTINE_REINJECT",
+            resource_type="QUARANTINE_ITEM",
+            resource_identifier=str(item.id),
+            result=updated.state.value.upper(),
+            correlation_id=context.correlation_id,
+            safe_cause_code=None if outcome.conforming else outcome.cause.value,
+        )
+        return ReinjectionValidationResult(updated, snapshot)
 
     # -- descarte -----------------------------------------------------------
     def discard(

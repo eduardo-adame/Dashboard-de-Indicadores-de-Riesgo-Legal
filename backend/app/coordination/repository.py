@@ -64,7 +64,7 @@ class CoordinationRepository:
                (id, operation_id, file_id, downstream_target, state, correlation_id)
                VALUES (gen_random_uuid(), gen_random_uuid(), %s, %s, 'NEW', %s)
                ON CONFLICT (file_id, downstream_target)
-               DO UPDATE SET correlation_id = EXCLUDED.correlation_id
+               DO UPDATE SET correlation_id = app.coordination_dispatch.correlation_id
                RETURNING id, operation_id, file_id, downstream_target, state, attempt_count,
                          correlation_id, downstream_result_id, safe_cause_code,
                          created_at, started_at, completed_at, heartbeat_at""",

@@ -18,10 +18,14 @@ from app.validation.repository import ValidationRepository
 from app.validation.service import ValidationContext, ValidationService
 
 
-def make_validation_runner(*, conninfo: str, security):
+def make_validation_runner(*, conninfo: str, security, kpi_integration=None):
     """Runner que reconstruye el conjunto tabular y ejecuta Validation."""
 
     def run(context, file_id: UUID) -> UUID | None:
+        if kpi_integration is not None:
+            resumed = kpi_integration.resume(operation_id=context.operation_id)
+            if resumed is not None:
+                return resumed.job_id
         repository = ValidationRepository(conninfo, security.repository)
         service = ValidationService(repository, security)
         with repository.transaction() as connection:
@@ -30,7 +34,7 @@ def make_validation_runner(*, conninfo: str, security):
             records = reconstruct_records(connection, file_id)
         if family is None or not records:
             return None
-        service.validate(
+        result = service.validate(
             file_id=file_id,
             family=family,
             headers=headers,
@@ -41,12 +45,20 @@ def make_validation_runner(*, conninfo: str, security):
                 actor=context.actor,
             ),
         )
-        return None
+        if kpi_integration is None:
+            return None
+        outcome = kpi_integration.project_records(
+            records=result.validated_records,
+            operation_id=context.operation_id,
+            correlation_id=context.correlation_id,
+            actor=context.actor,
+        )
+        return outcome.job_id
 
     return run
 
 
-def make_document_runner(*, conninfo: str, security, tokenizer_factory=None, storage_root: str | None = None):
+def make_document_runner(*, conninfo: str, security, tokenizer_factory=None, storage_root: str | None = None, kpi_integration=None):
     """Runner que reconstruye el candidato documental y lo procesa.
 
     El procesamiento documental (versión, fragmentación y activación atómica) se
@@ -55,6 +67,10 @@ def make_document_runner(*, conninfo: str, security, tokenizer_factory=None, sto
     """
 
     def run(context, file_id: UUID) -> UUID | None:
+        if kpi_integration is not None:
+            resumed = kpi_integration.resume(operation_id=context.operation_id)
+            if resumed is not None:
+                return resumed.job_id
         from app.documents.processing import process_candidate
         from app.ocr.pipeline import make_ocr_pipeline
 
@@ -65,7 +81,7 @@ def make_document_runner(*, conninfo: str, security, tokenizer_factory=None, sto
         ocr_pipeline = None
         if any(page.requires_ocr for page in candidate.pages) and storage_root:
             ocr_pipeline = make_ocr_pipeline(conninfo=conninfo, storage_root=storage_root)
-        return process_candidate(
+        result = process_candidate(
             conninfo=conninfo,
             security=security,
             file_id=file_id,
@@ -74,6 +90,13 @@ def make_document_runner(*, conninfo: str, security, tokenizer_factory=None, sto
             tokenizer_factory=tokenizer_factory,
             ocr_pipeline=ocr_pipeline,
         )
+        if kpi_integration is None:
+            return result
+        outcome = kpi_integration.process_final_ocr(
+            operation_id=context.operation_id,
+            correlation_id=context.correlation_id,
+        )
+        return outcome.job_id
 
     return run
 
