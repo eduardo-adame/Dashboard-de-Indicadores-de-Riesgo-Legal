@@ -32,6 +32,7 @@ REVISIONS = (
     "0010_document_candidate",
     "0011_document_manage_capability",
     "0012_kpi_observation_semantics",
+    "0013_proactive_analysis",
 )
 
 
@@ -90,6 +91,7 @@ def test_every_revision_is_valid_and_round_trips(migrated_database: tuple[sa.Eng
         # 0012 alinea kpi_observation; no crea tablas nuevas. El mapa comprueba
         # únicamente existencia de tablas, por lo que el conjunto es vacío.
         "0012_kpi_observation_semantics": set(),
+        "0013_proactive_analysis": {"proactive_input_snapshot", "proactive_evaluation"},
     }
     previous = "base"
     for revision in REVISIONS:
@@ -648,4 +650,3 @@ def test_kpi_observation_as_of_date_is_not_null(kpi_observation_context) -> None
             assert original.diag.column_name == "as_of_date"
         finally:
             savepoint.rollback()
-
