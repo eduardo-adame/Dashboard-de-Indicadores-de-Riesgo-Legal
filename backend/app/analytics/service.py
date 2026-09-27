@@ -7,9 +7,22 @@ from decimal import Decimal
 from typing import Iterable
 from uuid import UUID, uuid5
 
+import psycopg
+
 from app.analytics.models import (
     KPI_CODES, KpiCalculationError, KpiObservationResult, KpiQuery,
     KpiRecalculationContext, KpiRecalculationRequest, KpiRecalculationResult,
+    ProactiveAnalysisContext, ProactiveAnalysisError, ProactiveAnalysisQuery,
+    ProactiveAnalysisReadResult, ProactiveAnalysisResult,
+    ProactiveContextReferenceResult, ProactiveEvaluationResult,
+    ProactiveFindingResult, ProactiveQueryContext,
+)
+from app.analytics.proactive_rules import (
+    build_finding, canonical_dimensions_json, canonical_fingerprint,
+    derive_context_id, derive_context_operation_id, derive_run_id,
+    derive_run_operation_id as derive_proactive_run_operation_id,
+    evaluate_snapshot, executive_summary, rules_reference, run_metadata,
+    select_snapshot_closure, terminal_months_used, valid_fingerprint_contract,
 )
 from app.projection.models import ProjectionResult
 from app.security.models import SecurityError
@@ -123,6 +136,303 @@ class KpiQueryService:
             with self.repository.transaction() as connection:
                 self.audit_repository.write_audit_event(connection, actor=context.actor, action="AUTHORIZATION_DENIED", resource_type="KPI", resource_identifier=None, result="DENIED", correlation_id=context.correlation_id, safe_cause_code="DEFAULT_DENY")
             raise
+
+
+class ProactiveAnalysisService:
+    """Ejecuta análisis mensual determinista sobre snapshots certificados."""
+
+    def __init__(self, repository, audit_repository=None) -> None:
+        if audit_repository is None:
+            raise ValueError("la auditoría del análisis proactivo es obligatoria")
+        self.repository = repository
+        self.audit_repository = audit_repository
+
+    def execute(self, context: ProactiveAnalysisContext) -> ProactiveAnalysisResult:
+        for attempt in range(3):
+            try:
+                return self._execute_once(context)
+            except (psycopg.errors.SerializationFailure, psycopg.errors.DeadlockDetected) as exc:
+                if attempt == 2:
+                    raise ProactiveAnalysisError(
+                        "la ejecución concurrente no pudo confirmarse",
+                        safe_cause_code="CONCURRENT_RUN_NOT_CONFIRMED",
+                    ) from exc
+        raise AssertionError("unreachable")
+
+    def _execute_once(self, context: ProactiveAnalysisContext) -> ProactiveAnalysisResult:
+        durable_run_id: UUID | None = None
+        authoritative_job = None
+        try:
+            frozen = self._freeze(context)
+            if isinstance(frozen, ProactiveAnalysisResult):
+                return frozen
+            durable_run_id, authoritative_job = frozen
+            return self._finalize(durable_run_id, authoritative_job)
+        except (psycopg.errors.SerializationFailure, psycopg.errors.DeadlockDetected):
+            raise
+        except ProactiveAnalysisError as exc:
+            if durable_run_id is not None and authoritative_job is not None:
+                self._record_proactive_failure(durable_run_id, authoritative_job, exc.safe_cause_code)
+            raise
+        except Exception as exc:
+            if durable_run_id is not None and authoritative_job is not None:
+                self._record_proactive_failure(durable_run_id, authoritative_job, type(exc).__name__[:80])
+            raise ProactiveAnalysisError("el análisis proactivo no pudo confirmarse") from exc
+
+    def _freeze(self, context: ProactiveAnalysisContext):
+        with self.repository.transaction() as connection:
+            job = self.repository.proactive_job(connection, context.job_run_id)
+            self._validate_job(job, context)
+
+            existing = self.repository.proactive_run_for_job(connection, context.job_run_id, for_update=True)
+            if existing is not None:
+                fingerprint = _fingerprint_from_run(existing)
+                if existing["state"] == "COMPLETED":
+                    return _proactive_result(self.repository, connection, existing, fingerprint)
+                return existing["id"], job
+
+            relevance_input = self.repository.eligible_proactive_observations(connection)
+            fingerprint = canonical_fingerprint(relevance_input)
+            if not relevance_input:
+                return ProactiveAnalysisResult("NO_RELEVANT_WORK", fingerprint, None, None)
+
+            latest = self.repository.latest_completed_proactive_run(connection)
+            if latest is not None:
+                previous = _fingerprint_from_run(latest)
+                if previous == fingerprint:
+                    return ProactiveAnalysisResult("NO_RELEVANT_WORK", fingerprint, None, None)
+
+            snapshot = select_snapshot_closure(relevance_input)
+            window_start, window_end, codes = run_metadata(snapshot)
+            operation_id = derive_proactive_run_operation_id(job["operation_id"], fingerprint)
+            run_id = derive_run_id(operation_id)
+            metadata = rules_reference(
+                fingerprint=fingerprint,
+                job_run_id=job["id"],
+                parent_operation_id=job["operation_id"],
+            )
+            self.repository.acquire_run_lock(connection)
+            created = self.repository.create_proactive_run(
+                connection,
+                run_id=run_id,
+                operation_id=operation_id,
+                correlation_id=job["correlation_id"],
+                window_start=window_start,
+                window_end=window_end,
+                codes=codes,
+                rules_reference=metadata,
+            )
+            if created is None:
+                concurrent = self.repository.proactive_run_for_job(connection, job["id"], for_update=True)
+                if concurrent is None:
+                    raise ProactiveAnalysisError("la ejecución concurrente no pudo confirmarse", safe_cause_code="CONCURRENT_RUN_NOT_CONFIRMED")
+                return concurrent["id"], job
+            self.repository.persist_proactive_snapshot(
+                connection,
+                run_id=run_id,
+                job_run_id=job["id"],
+                observations=snapshot,
+            )
+            return run_id, job
+
+    def _finalize(self, run_id: UUID, job) -> ProactiveAnalysisResult:
+        with self.repository.transaction() as connection:
+            run = self.repository.proactive_run_for_job(connection, job["id"], for_update=True)
+            if run is None or run["id"] != run_id:
+                raise ProactiveAnalysisError("la ejecución persistida no coincide", safe_cause_code="RUN_BINDING_MISMATCH")
+            fingerprint = _fingerprint_from_run(run)
+            if run["state"] == "COMPLETED":
+                return _proactive_result(self.repository, connection, run, fingerprint)
+            if run["state"] == "FAILED":
+                self.repository.restart_failed_run(connection, run_id)
+
+            snapshot = self.repository.proactive_snapshot(connection, run_id)
+            if not snapshot:
+                raise ProactiveAnalysisError("el snapshot de la ejecución no existe", safe_cause_code="SNAPSHOT_NOT_FOUND")
+            evaluations = evaluate_snapshot(run_id, snapshot)
+            findings: list[ProactiveFindingResult] = []
+            for evaluation in evaluations:
+                self.repository.persist_proactive_evaluation(connection, evaluation)
+                period_end = _current_period_end(snapshot, evaluation)
+                finding = build_finding(run["operation_id"], evaluation, period_end)
+                if finding is None:
+                    continue
+                self.repository.persist_proactive_finding(connection, finding)
+                reference = _context_reference(run, job, snapshot, evaluation, finding)
+                self.repository.persist_context_reference(connection, reference)
+                findings.append(finding)
+
+            summary = executive_summary(findings)
+            self.audit_repository.write_audit_event(
+                connection,
+                actor=None,
+                action="PROACTIVE_ANALYSIS",
+                resource_type="ANALYTIC_RUN",
+                resource_identifier=str(run_id),
+                result="SUCCESS",
+                correlation_id=job["correlation_id"],
+                process_identifier=job["actor_process"],
+            )
+            self.repository.complete_proactive_run(connection, run_id, summary)
+            return ProactiveAnalysisResult(
+                "COMPLETED", fingerprint, run_id, run["operation_id"],
+                tuple(evaluations), tuple(findings), summary,
+            )
+
+    @staticmethod
+    def _validate_job(job, context: ProactiveAnalysisContext) -> None:
+        if job is None or job["case_type"] != "PROACTIVE_ANALYSIS":
+            raise ProactiveAnalysisError("job proactivo no válido", safe_cause_code="JOB_CONTRACT_MISMATCH")
+        if job["operation_id"] != context.operation_id:
+            raise ProactiveAnalysisError("operación no coincide con el job", safe_cause_code="JOB_OPERATION_MISMATCH")
+        if job["correlation_id"] != context.correlation_id:
+            raise ProactiveAnalysisError("correlación no coincide con el job", safe_cause_code="JOB_CORRELATION_MISMATCH")
+        if job["actor_process"] != context.process_identifier:
+            raise ProactiveAnalysisError("proceso no coincide con el job", safe_cause_code="JOB_PROCESS_MISMATCH")
+
+    def _record_proactive_failure(self, run_id: UUID, job, safe_cause: str) -> None:
+        try:
+            with self.repository.transaction() as connection:
+                run = self.repository.proactive_run_for_job(connection, job["id"], for_update=True)
+                if run is None or run["id"] != run_id or run["state"] == "COMPLETED":
+                    return
+                self.repository.fail_run(connection, run_id, safe_cause)
+                self.audit_repository.write_audit_event(
+                    connection,
+                    actor=None,
+                    action="PROACTIVE_ANALYSIS",
+                    resource_type="ANALYTIC_RUN",
+                    resource_identifier=str(run_id),
+                    result="FAILURE",
+                    correlation_id=job["correlation_id"],
+                    safe_cause_code=safe_cause,
+                    process_identifier=job["actor_process"],
+                )
+        except Exception:
+            return
+
+
+class ProactiveAnalysisQueryService:
+    def __init__(self, repository, security_service, audit_repository=None) -> None:
+        if audit_repository is None:
+            raise ValueError("la auditoría de denegaciones es obligatoria")
+        self.repository = repository
+        self.security_service = security_service
+        self.audit_repository = audit_repository
+
+    def latest_completed(self, context: ProactiveQueryContext) -> ProactiveAnalysisReadResult | None:
+        rows = self._authorized_runs(ProactiveAnalysisQuery(), context)
+        return None if not rows else rows[0]
+
+    def get_completed(self, analytic_run_id: UUID, context: ProactiveQueryContext) -> ProactiveAnalysisReadResult | None:
+        rows = self._authorized_runs(ProactiveAnalysisQuery(analytic_run_id=analytic_run_id), context)
+        return None if not rows else rows[0]
+
+    def list_completed(self, query: ProactiveAnalysisQuery, context: ProactiveQueryContext) -> tuple[ProactiveAnalysisReadResult, ...]:
+        return self._authorized_runs(query, context)
+
+    def _authorized_runs(self, query: ProactiveAnalysisQuery, context: ProactiveQueryContext) -> tuple[ProactiveAnalysisReadResult, ...]:
+        try:
+            with self.repository.transaction() as connection:
+                self.security_service.revalidate_functional_access(connection, context.actor, "dashboard.read")
+                runs = self.repository.list_completed_proactive_runs(
+                    connection,
+                    run_id=query.analytic_run_id,
+                    period_start=query.period_start,
+                    period_end=query.period_end,
+                )
+                return tuple(_proactive_read_result(self.repository, connection, run) for run in runs)
+        except SecurityError:
+            with self.repository.transaction() as connection:
+                self.audit_repository.write_audit_event(
+                    connection,
+                    actor=context.actor,
+                    action="AUTHORIZATION_DENIED",
+                    resource_type="PROACTIVE_ANALYSIS",
+                    resource_identifier=None,
+                    result="DENIED",
+                    correlation_id=context.correlation_id,
+                    safe_cause_code="DEFAULT_DENY",
+                )
+            raise
+
+
+def _fingerprint_from_run(run) -> str:
+    reference = run["rules_reference"]
+    if not valid_fingerprint_contract(reference):
+        raise ProactiveAnalysisError(
+            "el último análisis completado no contiene una huella válida",
+            safe_cause_code="PROACTIVE_FINGERPRINT_CONTRACT_GAP",
+        )
+    return reference["input_fingerprint_sha256"]
+
+
+def _proactive_result(repository, connection, run, fingerprint: str) -> ProactiveAnalysisResult:
+    evaluations = tuple(_evaluation_from_row(row) for row in repository.proactive_evaluations(connection, run["id"]))
+    findings = tuple(_finding_from_row(row) for row in repository.proactive_findings(connection, run["id"]))
+    return ProactiveAnalysisResult(
+        "COMPLETED", fingerprint, run["id"], run["operation_id"],
+        evaluations, findings, run["executive_summary"],
+    )
+
+
+def _proactive_read_result(repository, connection, run) -> ProactiveAnalysisReadResult:
+    result = _proactive_result(repository, connection, run, _fingerprint_from_run(run))
+    references = tuple(
+        ProactiveContextReferenceResult(
+            row["id"], row["finding_id"], row["kpi_code"], row["dimensions"],
+            row["period_start"], row["period_end"], row["context_identifiers"],
+            row["operation_id"], row["correlation_id"],
+        )
+        for row in repository.proactive_context_references(connection, run["id"])
+    )
+    return ProactiveAnalysisReadResult(result, references)
+
+
+def _evaluation_from_row(row) -> ProactiveEvaluationResult:
+    return ProactiveEvaluationResult(
+        row["id"], row["analytic_run_id"], row["kpi_code"], row["canonical_dimensions_key"],
+        row["evaluation_period"], row["outcome"], row["signal_detected"], row["trend_direction"],
+        row["recurrence_month_count"], row["current_value"], row["reference_value"],
+        row["absolute_variation"], row["percentage_variation"], tuple(row["rules_applied"]),
+        row["not_evaluated_reason"],
+    )
+
+
+def _finding_from_row(row) -> ProactiveFindingResult:
+    return ProactiveFindingResult(
+        row["id"], row["analytic_run_id"], row["proactive_evaluation_id"], row["kpi_code"],
+        row["dimensions"], row["period_start"], row["period_end"], row["current_value"],
+        row["reference_value"], row["variation"], row["triggered_rule"],
+        row["recurrent_pattern"], row["description"],
+    )
+
+
+def _current_period_end(snapshot, evaluation: ProactiveEvaluationResult) -> date:
+    dimensions = canonical_dimensions_json(evaluation.canonical_dimensions_key)
+    for row in snapshot:
+        if row.kpi_code == evaluation.kpi_code and row.period_start == evaluation.evaluation_period and canonical_dimensions_json(row.canonical_dimensions_key) == dimensions:
+            return row.period_end
+    raise ProactiveAnalysisError("el periodo actual no existe en el snapshot", safe_cause_code="CURRENT_PERIOD_NOT_FOUND")
+
+
+def _context_reference(run, job, snapshot, evaluation: ProactiveEvaluationResult, finding: ProactiveFindingResult) -> ProactiveContextReferenceResult:
+    dimensions = canonical_dimensions_json(evaluation.canonical_dimensions_key)
+    source_ids = sorted(
+        str(row.source_observation_id)
+        for row in snapshot
+        if row.kpi_code == evaluation.kpi_code and canonical_dimensions_json(row.canonical_dimensions_key) == dimensions
+    )
+    identifiers = {
+        "proactive_evaluation_id": str(evaluation.id),
+        "source_observation_ids": source_ids,
+        "terminal_months_used": list(terminal_months_used(evaluation)),
+    }
+    return ProactiveContextReferenceResult(
+        derive_context_id(finding.id), finding.id, finding.kpi_code, finding.dimensions,
+        finding.period_start, finding.period_end, identifiers,
+        derive_context_operation_id(run["operation_id"], finding.id), job["correlation_id"],
+    )
 
 
 def _available(code: str, request: KpiRecalculationRequest, value: Decimal, dimensions: dict[str, str] | None = None) -> KpiObservationResult:
