@@ -52,6 +52,7 @@ def test_revision_chain_is_linear_and_complete() -> None:
         "0011_document_manage_capability",
         "0012_kpi_observation_semantics",
         "0013_proactive_analysis",
+        "0014_rag_index_certificate",
     ]
     assert len(script.get_heads()) == 1
 
@@ -78,6 +79,8 @@ def test_offline_upgrade_and_downgrade_compile() -> None:
     assert "uq_coordination_dispatch_identity" in sql
     assert "create table app.proactive_input_snapshot" in sql
     assert "create table app.proactive_evaluation" in sql
+    assert "create table app.document_index_certificate" in sql
+    assert "create table app.document_chunk_index_receipt" in sql
 
     downgrade = subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), "downgrade", "head:base", "--sql"],

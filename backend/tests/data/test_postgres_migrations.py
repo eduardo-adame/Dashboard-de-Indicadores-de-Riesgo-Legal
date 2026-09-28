@@ -33,6 +33,7 @@ REVISIONS = (
     "0011_document_manage_capability",
     "0012_kpi_observation_semantics",
     "0013_proactive_analysis",
+    "0014_rag_index_certificate",
 )
 
 
@@ -92,6 +93,7 @@ def test_every_revision_is_valid_and_round_trips(migrated_database: tuple[sa.Eng
         # únicamente existencia de tablas, por lo que el conjunto es vacío.
         "0012_kpi_observation_semantics": set(),
         "0013_proactive_analysis": {"proactive_input_snapshot", "proactive_evaluation"},
+        "0014_rag_index_certificate": {"document_index_certificate", "document_chunk_index_receipt"},
     }
     previous = "base"
     for revision in REVISIONS:
@@ -527,7 +529,11 @@ def test_0012_refuses_upgrade_when_kpi_observation_has_rows(
     analytical_database: tuple[sa.Engine, Config],
 ) -> None:
     engine, config = analytical_database
-    if _current_revision(engine) == "0012_kpi_observation_semantics":
+    if _current_revision(engine) in {
+        "0012_kpi_observation_semantics",
+        "0013_proactive_analysis",
+        "0014_rag_index_certificate",
+    }:
         command.downgrade(config, "0011_document_manage_capability")
     command.upgrade(config, "0011_document_manage_capability")
 
