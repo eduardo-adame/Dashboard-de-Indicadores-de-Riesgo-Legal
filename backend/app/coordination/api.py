@@ -10,12 +10,18 @@ from datetime import datetime
 from uuid import UUID, uuid4, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import Settings, get_settings
 from app.coordination.repository import CoordinationRepository
 from app.coordination.kpi_integration import KpiIntegrationService, derive_scheduled_operation_id
 from app.coordination.kpi_repository import KpiIntegrationRepository
+from app.coordination.proactive_integration import (
+    ProactiveIntegrationService,
+    canonical_interval,
+    derive_proactive_correlation_id,
+)
+from app.coordination.proactive_repository import ProactiveIntegrationRepository
 from app.coordination.service import CoordinationService
 from app.security.api import require, security_settings, service_for
 from app.security.models import AuthenticatedPrincipal, SecurityError
@@ -43,6 +49,20 @@ class ScheduledKpiRequest(BaseModel):
 
 
 class KpiJobResponse(BaseModel):
+    job_id: str
+    operation_id: str
+    state: str
+
+
+class ScheduledProactiveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    data_interval_start: datetime
+    data_interval_end: datetime
+    correlation_id: str | None = Field(default=None, max_length=64)
+
+
+class ProactiveJobResponse(BaseModel):
     job_id: str
     operation_id: str
     state: str
@@ -142,3 +162,58 @@ def scheduled_kpi_recalculation(
     except Exception:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="El recálculo no pudo confirmarse") from None
     return KpiJobResponse(job_id=str(outcome.job_id), operation_id=str(outcome.operation_id), state=outcome.state)
+
+
+@router.post("/proactive-analysis/scheduled", response_model=ProactiveJobResponse)
+def scheduled_proactive_analysis(
+    payload: ScheduledProactiveRequest,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(require("ingest.execute")),
+    security: SecurityService = Depends(service_for),
+    settings: Settings = Depends(security_settings),
+) -> ProactiveJobResponse:
+    del principal
+    try:
+        start, end = canonical_interval(
+            payload.data_interval_start,
+            payload.data_interval_end,
+        )
+        correlation_id = (
+            UUID(payload.correlation_id)
+            if payload.correlation_id
+            else derive_proactive_correlation_id(
+                interval_start=start,
+                interval_end=end,
+            )
+        )
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Intervalo o correlación no válidos",
+        ) from None
+
+    integration = getattr(
+        request.app.state,
+        "proactive_integration_service",
+        None,
+    ) or ProactiveIntegrationService(
+        conninfo=settings.psycopg_conninfo,
+        audit_repository=security.repository,
+        repository=ProactiveIntegrationRepository(settings.psycopg_conninfo),
+    )
+    try:
+        outcome = integration.schedule(
+            interval_start=start,
+            interval_end=end,
+            correlation_id=correlation_id,
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="El análisis proactivo no pudo confirmarse",
+        ) from None
+    return ProactiveJobResponse(
+        job_id=str(outcome.job_id),
+        operation_id=str(outcome.operation_id),
+        state=outcome.state,
+    )

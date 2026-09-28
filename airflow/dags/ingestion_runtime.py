@@ -76,11 +76,45 @@ def request_scheduled_kpi_recalculation(**context) -> None:
             timeout=int(os.getenv("COORDINATION_TIMEOUT_SECONDS", "360")),
         )
         response.raise_for_status()
+        _require_terminal_job(response, {"COMPLETED", "NO_RELEVANT_WORK"}, "KPI")
     finally:
         requests.post(f"{endpoint}/api/auth/logout", headers=headers, timeout=30)
+
+
+def request_scheduled_proactive_analysis(**context) -> None:
+    endpoint = os.getenv("INGESTION_API_URL", "http://backend:8000")
+    headers, _ = _login(endpoint)
+    try:
+        start = context["data_interval_start"].in_timezone("UTC")
+        end = context["data_interval_end"].in_timezone("UTC")
+        response = requests.post(
+            f"{endpoint}/api/coordination/proactive-analysis/scheduled",
+            json={
+                "data_interval_start": start.isoformat(),
+                "data_interval_end": end.isoformat(),
+                "correlation_id": _correlation_id(context),
+            },
+            headers=headers,
+            timeout=int(os.getenv("COORDINATION_TIMEOUT_SECONDS", "360")),
+        )
+        response.raise_for_status()
+        _require_terminal_job(
+            response,
+            {"COMPLETED", "NO_RELEVANT_WORK"},
+            "PROACTIVE_ANALYSIS",
+        )
+    finally:
+        requests.post(f"{endpoint}/api/auth/logout", headers=headers, timeout=30)
+
+
+def _require_terminal_job(response, allowed_states: set[str], label: str) -> None:
+    state = response.json().get("state")
+    if state not in allowed_states:
+        raise RuntimeError(f"{label} no alcanzó un estado terminal exitoso")
 
 
 with DAG("controlled_ingestion", start_date=datetime(2026, 1, 1), schedule="@daily", catchup=False) as dag:
     ingestion = PythonOperator(task_id="run_controlled_ingestion", python_callable=run_controlled_ingestion, retries=1)
     recalculation = PythonOperator(task_id="request_scheduled_kpi_recalculation", python_callable=request_scheduled_kpi_recalculation, retries=1)
-    ingestion >> recalculation
+    proactive = PythonOperator(task_id="request_scheduled_proactive_analysis", python_callable=request_scheduled_proactive_analysis, retries=1)
+    ingestion >> recalculation >> proactive
