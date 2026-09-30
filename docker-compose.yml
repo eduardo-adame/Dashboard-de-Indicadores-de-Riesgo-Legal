@@ -128,8 +128,9 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
-      POSTGRES_USER: ${POSTGRES_USER:-app}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD debe definirse en producto/.env}
+      POSTGRES_USER: ${RUNTIME_POSTGRES_USER:?RUNTIME_POSTGRES_USER debe definirse en producto/.env}
+      POSTGRES_PASSWORD: ${RUNTIME_POSTGRES_PASSWORD:?RUNTIME_POSTGRES_PASSWORD debe definirse en producto/.env}
+      RUNTIME_POSTGRES_USER: ${RUNTIME_POSTGRES_USER:?RUNTIME_POSTGRES_USER debe definirse en producto/.env}
       POSTGRES_DB: ${POSTGRES_DB:-riesgo_legal}
       # --- Modelo de embeddings -------------------------------------------------
       # Raíz única de caché: las tres variables de localización del modelo
@@ -158,6 +159,10 @@ services:
       SECURITY_BOOTSTRAP_PASSWORD: ${SECURITY_BOOTSTRAP_PASSWORD:-}
       INGESTION_STORAGE_ROOT: /data/ingestion
       INGESTION_CONTROLLED_ROOT: /data/controlled
+    command:
+      - sh
+      - -c
+      - python -m app.security.runtime_check && exec uvicorn app.main:app --host 0.0.0.0 --port 8000
     volumes:
       # Caché persistente del modelo: sobrevive a `docker compose down` (sin -v)
       # y evita volver a descargar varios gigabytes entre recreaciones.

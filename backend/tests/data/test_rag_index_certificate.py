@@ -1,4 +1,4 @@
-"""PostgreSQL contract for durable document index certification."""
+"""Contrato PostgreSQL para la certificación durable del índice documental."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -46,8 +46,8 @@ def database():
         "riesgo_legal", "riesgo_legal_test"
     }:
         pytest.fail("a dedicated index-certification test database is required")
-    # The durability/guard test intentionally leaves immutable evidence. Give
-    # this module its own disposable database so repeated runs remain isolated.
+    # La prueba de durabilidad y protección deja evidencia inmutable a propósito.
+    # Este módulo usa su propia base desechable para aislar ejecuciones repetidas.
     database_name = f"rag_index_certificate_test_{uuid.uuid4().hex}"
     admin = sa.create_engine(url, isolation_level="AUTOCOMMIT")
     engine = None
@@ -181,9 +181,11 @@ def _assert_waits_for(engine, started, pid_holder, blocker_pid):
 def test_0013_to_0014_upgrade_and_single_head(database):
     engine, config = database
     from alembic.script import ScriptDirectory
-    assert ScriptDirectory.from_config(config).get_heads() == ["0014_rag_index_certificate"]
+    script = ScriptDirectory.from_config(config)
+    assert script.get_heads() == ["0015_runtime_privs"]
+    assert script.get_revision("0015_runtime_privs").down_revision == "0014_rag_index_certificate"
     with engine.connect() as conn:
-        assert conn.execute(sa.text("SELECT version_num FROM public.alembic_version")).scalar_one() == "0014_rag_index_certificate"
+        assert conn.execute(sa.text("SELECT version_num FROM public.alembic_version")).scalar_one() == "0015_runtime_privs"
         for table in ("document_index_certificate", "document_chunk_index_receipt"):
             assert conn.execute(sa.text("SELECT to_regclass(:name)"), {"name": f"app.{table}"}).scalar_one() is not None
 

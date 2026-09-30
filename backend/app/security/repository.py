@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import UTC, datetime
+import re
 from typing import Iterator
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import psycopg
 from psycopg.rows import dict_row
@@ -363,3 +364,99 @@ class SecurityRepository:
                     uuid4(), correlation_id,
                 ),
             )
+
+    @staticmethod
+    def write_rag_audit_event(
+        connection: psycopg.Connection,
+        *,
+        actor: AuthenticatedPrincipal,
+        rag_operation_id: UUID,
+        operation_id: UUID,
+        correlation_id: UUID,
+        query_sha256: bytes,
+        action: str,
+        result: str,
+        safe_cause_code: str | None,
+        resources: tuple[tuple[str, UUID], ...],
+    ) -> UUID:
+        """Añade un evento RAG final usando la transacción abierta del caller.
+
+        La aplicación RAG controla la serialización de la operación y la resolución
+        de reintentos. Un ID de evento en conflicto siempre es un error aquí; nunca
+        se presupone que sea un reintento.
+        """
+        if action not in {"RAG_QUERY", "AUTHORIZATION_DENIED"}:
+            raise AuditPersistenceError("Unsupported RAG audit action")
+        if not isinstance(query_sha256, bytes) or len(query_sha256) != 32:
+            raise AuditPersistenceError("Invalid RAG query hash")
+        if not result or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", result):
+            raise AuditPersistenceError("Invalid RAG audit result")
+        if safe_cause_code is not None and not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", safe_cause_code):
+            raise AuditPersistenceError("Invalid safe cause code")
+        if action == "AUTHORIZATION_DENIED" and (result != "DENIED" or resources):
+            raise AuditPersistenceError("Authorization denial cannot include resources")
+        if action == "RAG_QUERY" and result == "DENIED":
+            raise AuditPersistenceError("RAG action and result mismatch")
+        if len(set(resources)) != len(resources):
+            raise AuditPersistenceError("Duplicate RAG audit resource")
+
+        event_id = uuid5(NAMESPACE_URL, f"riesgo-legal:RAG_QUERY:{str(operation_id).lower()}")
+        try:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    "SELECT r.id, r.user_id, r.session_id, r.query_sha256, r.state, "
+                    "r.operation_id, r.correlation_id, u.username "
+                    "FROM app.rag_operation r "
+                    "JOIN app.user_account u ON u.id = r.user_id WHERE r.id = %s",
+                    (rag_operation_id,),
+                )
+                operation = cursor.fetchone()
+                if (
+                    operation is None
+                    or operation["id"] != rag_operation_id
+                    or operation["operation_id"] != operation_id
+                    or operation["correlation_id"] != correlation_id
+                    or operation["user_id"] != actor.account_id
+                    or operation["username"] != actor.username
+                    or (operation["session_id"] is not None and operation["session_id"] != actor.session_id)
+                    or bytes(operation["query_sha256"]) != query_sha256
+                ):
+                    raise AuditPersistenceError("RAG operation identity mismatch")
+                if action == "AUTHORIZATION_DENIED":
+                    if operation["state"] != "SIN_AUTORIZACION":
+                        raise AuditPersistenceError("RAG denial state mismatch")
+                elif operation["state"] == "SIN_AUTORIZACION":
+                    raise AuditPersistenceError("RAG state and action mismatch")
+
+                cursor.execute(
+                    "SELECT f.fragment_id, v.id_documento "
+                    "FROM app.rag_final_fragment f "
+                    "JOIN app.document_chunk c ON c.id = f.fragment_id "
+                    "JOIN app.document_version v ON v.id = c.document_version_id "
+                    "WHERE f.rag_operation_id = %s",
+                    (rag_operation_id,),
+                )
+                persisted = {(str(row["id_documento"]), row["fragment_id"]) for row in cursor.fetchall()}
+                if set(resources) != persisted:
+                    raise AuditPersistenceError("RAG final resource provenance mismatch")
+
+                cursor.execute(
+                    "INSERT INTO audit.event "
+                    "(id, actor_type, actor_identifier, actor_user_id, action, resource_type, "
+                    "resource_identifier, result, safe_cause_code, operation_id, correlation_id, query_sha256) "
+                    "VALUES (%s, 'HUMAN', %s, %s, %s, 'RAG_OPERATION', %s, %s, %s, %s, %s, %s)",
+                    (
+                        event_id, actor.username, actor.account_id, action, str(rag_operation_id),
+                        result, safe_cause_code, operation_id, correlation_id, query_sha256,
+                    ),
+                )
+                for document_id, fragment_id in resources:
+                    cursor.execute(
+                        "INSERT INTO audit.event_resource "
+                        "(event_id, resource_type, resource_identifier, id_documento, fragment_id) "
+                        "VALUES (%s, 'DOCUMENT_FRAGMENT', %s, %s, %s)",
+                        (event_id, str(fragment_id), document_id, fragment_id),
+                    )
+        except psycopg.Error as exc:
+            raise AuditPersistenceError("RAG audit persistence failed") from exc
+        return event_id

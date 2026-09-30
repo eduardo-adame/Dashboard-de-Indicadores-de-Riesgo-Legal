@@ -34,6 +34,7 @@ REVISIONS = (
     "0012_kpi_observation_semantics",
     "0013_proactive_analysis",
     "0014_rag_index_certificate",
+    "0015_runtime_privs",
 )
 
 
@@ -94,6 +95,7 @@ def test_every_revision_is_valid_and_round_trips(migrated_database: tuple[sa.Eng
         "0012_kpi_observation_semantics": set(),
         "0013_proactive_analysis": {"proactive_input_snapshot", "proactive_evaluation"},
         "0014_rag_index_certificate": {"document_index_certificate", "document_chunk_index_receipt"},
+        "0015_runtime_privs": set(),
     }
     previous = "base"
     for revision in REVISIONS:
@@ -241,7 +243,7 @@ def test_contract_constraints_atomic_version_and_audit_privileges(
         assert connection.execute(sa.text("SELECT has_table_privilege('riesgo_legal_runtime', 'audit.event', 'DELETE')")).scalar_one() is False
         assert connection.execute(sa.text("SELECT has_table_privilege('riesgo_legal_runtime', 'audit.event', 'INSERT')")).scalar_one() is True
 
-    # A domain mutation and its mandatory audit event share one transaction.
+    # Una mutación de dominio y su evento de auditoría obligatorio comparten transacción.
     rolled_back_object = uuid.uuid4()
     duplicate_event = uuid.uuid4()
     with engine.begin() as connection:
@@ -533,6 +535,7 @@ def test_0012_refuses_upgrade_when_kpi_observation_has_rows(
         "0012_kpi_observation_semantics",
         "0013_proactive_analysis",
         "0014_rag_index_certificate",
+        "0015_runtime_privs",
     }:
         command.downgrade(config, "0011_document_manage_capability")
     command.upgrade(config, "0011_document_manage_capability")
