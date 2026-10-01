@@ -33,7 +33,7 @@ def runtime_login():
     with psycopg.connect(**owner, autocommit=True) as connection:
         with connection.cursor() as cursor:
             cursor.execute("SELECT version_num FROM public.alembic_version")
-            assert cursor.fetchone() == ("0015_runtime_privs",)
+            assert cursor.fetchone() == ("0016_rag_operation_lifecycle",)
         try:
             provision(connection, login=login, password=password)
             yield dict(host=parsed.host, port=parsed.port or 5432, dbname=parsed.database,
@@ -79,7 +79,7 @@ def test_runtime_alembic_version_is_select_only(runtime_login) -> None:
     with psycopg.connect(**runtime_login) as connection:
         with connection.cursor() as cursor:
             cursor.execute("SELECT version_num FROM public.alembic_version")
-            assert cursor.fetchone() == ("0015_runtime_privs",)
+            assert cursor.fetchone() == ("0016_rag_operation_lifecycle",)
             for privilege in ("INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"):
                 cursor.execute("SELECT has_table_privilege(current_user, 'public.alembic_version', %s)", (privilege,))
                 assert cursor.fetchone() == (False,)
@@ -112,7 +112,7 @@ def guard_database():
                           POSTGRES_USER=parsed.username or "", POSTGRES_PASSWORD=parsed.password or "",
                           POSTGRES_DB=name)
         config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
-        command.upgrade(config, "0015_runtime_privs")
+        command.upgrade(config, "0016_rag_operation_lifecycle")
         with psycopg.connect(**owner, autocommit=True) as connection:
             provision(connection, login=login, password=password)
         yield owner, runtime
@@ -164,14 +164,14 @@ def _assert_guard_rejects_role_attribute(
 
 
 @pytest.mark.requires_db
-def test_runtime_check_rejects_0014_revision(guard_database) -> None:
+def test_runtime_check_rejects_0015_revision(guard_database) -> None:
     owner, runtime = guard_database
     with psycopg.connect(**owner, autocommit=True) as connection:
         try:
-            connection.execute("UPDATE public.alembic_version SET version_num='0014_rag_index_certificate'")
+            connection.execute("UPDATE public.alembic_version SET version_num='0015_runtime_privs'")
             _assert_guard_rejects(runtime)
         finally:
-            connection.execute("UPDATE public.alembic_version SET version_num='0015_runtime_privs'")
+            connection.execute("UPDATE public.alembic_version SET version_num='0016_rag_operation_lifecycle'")
 
 
 @pytest.mark.requires_db
@@ -182,7 +182,7 @@ def test_runtime_check_rejects_missing_or_multiple_revision_rows(guard_database)
             connection.execute("DELETE FROM public.alembic_version")
             _assert_guard_rejects(runtime)
         finally:
-            connection.execute("INSERT INTO public.alembic_version (version_num) VALUES ('0015_runtime_privs')")
+            connection.execute("INSERT INTO public.alembic_version (version_num) VALUES ('0016_rag_operation_lifecycle')")
         try:
             connection.execute("INSERT INTO public.alembic_version (version_num) VALUES ('0014_rag_index_certificate')")
             _assert_guard_rejects(runtime)

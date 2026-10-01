@@ -182,10 +182,11 @@ def test_0013_to_0014_upgrade_and_single_head(database):
     engine, config = database
     from alembic.script import ScriptDirectory
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["0015_runtime_privs"]
+    assert script.get_heads() == ["0016_rag_operation_lifecycle"]
+    assert script.get_revision("0016_rag_operation_lifecycle").down_revision == "0015_runtime_privs"
     assert script.get_revision("0015_runtime_privs").down_revision == "0014_rag_index_certificate"
     with engine.connect() as conn:
-        assert conn.execute(sa.text("SELECT version_num FROM public.alembic_version")).scalar_one() == "0015_runtime_privs"
+        assert conn.execute(sa.text("SELECT version_num FROM public.alembic_version")).scalar_one() == "0016_rag_operation_lifecycle"
         for table in ("document_index_certificate", "document_chunk_index_receipt"):
             assert conn.execute(sa.text("SELECT to_regclass(:name)"), {"name": f"app.{table}"}).scalar_one() is not None
 

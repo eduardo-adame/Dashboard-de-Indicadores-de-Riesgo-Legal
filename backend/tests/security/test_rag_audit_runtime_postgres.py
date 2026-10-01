@@ -34,7 +34,7 @@ def connection():
     with _connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("SELECT version_num FROM public.alembic_version")
-            assert cursor.fetchone()["version_num"] == "0015_runtime_privs"
+            assert cursor.fetchone()["version_num"] == "0016_rag_operation_lifecycle"
         try:
             yield conn
         finally:
@@ -65,11 +65,25 @@ def _seed(
             "VALUES (%s, %s, %s, 1, 'ACTIVE', CURRENT_TIMESTAMP + interval '1 hour')",
             (session_id, account_id, bytes(32)),
         )
+        generated_response = "Respuesta autorizada" if state == "EVIDENCIA_SUFICIENTE" else None
+        safe_result_message = None if state == "EVIDENCIA_SUFICIENTE" else "Resultado seguro"
         cursor.execute(
             "INSERT INTO app.rag_operation "
-            "(id, user_id, session_id, query_sha256, state, operation_id, correlation_id) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (rag_id, account_id, session_id, query_hash, state, operation_id, correlation_id),
+            "(id, user_id, session_id, query_sha256, state, generated_response, "
+            "safe_result_message, operation_id, correlation_id, operation_status, generation_status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'COMPLETED', %s)",
+            (
+                rag_id,
+                account_id,
+                session_id,
+                query_hash,
+                state,
+                generated_response,
+                safe_result_message,
+                operation_id,
+                correlation_id,
+                "SUCCEEDED" if state == "EVIDENCIA_SUFICIENTE" else "NOT_REQUESTED",
+            ),
         )
     resources: list[tuple[str, object]] = []
     fragment_count = int(final_fragment) + additional_final_fragments

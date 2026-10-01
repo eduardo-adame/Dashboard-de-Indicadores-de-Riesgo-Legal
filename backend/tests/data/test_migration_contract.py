@@ -54,6 +54,7 @@ def test_revision_chain_is_linear_and_complete() -> None:
         "0013_proactive_analysis",
         "0014_rag_index_certificate",
         "0015_runtime_privs",
+        "0016_rag_operation_lifecycle",
     ]
     assert len(script.get_heads()) == 1
 
@@ -83,6 +84,7 @@ def test_offline_upgrade_and_downgrade_compile() -> None:
     assert "create table app.document_index_certificate" in sql
     assert "create table app.document_chunk_index_receipt" in sql
     assert "grant select on public.alembic_version" in sql
+    assert "ck_rag_operation_lifecycle_consistency" in sql
 
     downgrade = subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(ALEMBIC_INI), "downgrade", "head:base", "--sql"],
