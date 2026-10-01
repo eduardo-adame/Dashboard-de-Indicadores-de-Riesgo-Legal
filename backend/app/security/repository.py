@@ -327,6 +327,24 @@ class SecurityRepository:
                 raise ValueError("La excepción requiere una cuenta o un rol")
 
     @staticmethod
+    def active_document_scope_families(
+        connection: psycopg.Connection,
+        role_ids: frozenset[str],
+    ) -> frozenset[str]:
+        """Carga los grants de familia activos para los roles vigentes."""
+        if not role_ids:
+            return frozenset()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT DISTINCT source_family
+                   FROM app.document_scope_grant
+                   WHERE active AND role_id = ANY(%s)
+                   ORDER BY source_family""",
+                (sorted(role_ids),),
+            )
+            return frozenset(str(row["source_family"]) for row in cursor.fetchall())
+
+    @staticmethod
     def document_rules(connection: psycopg.Connection, account_id: UUID, roles: frozenset[str], document_id: str) -> tuple[set[str], set[str], set[str]]:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -336,13 +354,8 @@ class SecurityRepository:
                 (document_id, account_id, list(roles)),
             )
             decisions = {str(row["decision"]) for row in cursor.fetchall()}
-            cursor.execute(
-                """SELECT source_family FROM app.document_scope_grant
-                   WHERE active AND role_id = ANY(%s)""",
-                (list(roles),),
-            )
-            families = {str(row["source_family"]) for row in cursor.fetchall()}
-        return decisions, families, set()
+        families = SecurityRepository.active_document_scope_families(connection, roles)
+        return decisions, set(families), set()
 
     @staticmethod
     def write_audit_event(connection: psycopg.Connection, *, actor: AuthenticatedPrincipal | None, action: str, resource_type: str, resource_identifier: str | None, result: str, correlation_id: UUID, safe_cause_code: str | None = None, process_identifier: str | None = None) -> None:

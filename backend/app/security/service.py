@@ -86,6 +86,16 @@ class SecurityService:
         """
         return self._authoritative_principal(connection, principal, capability)
 
+    def authorized_document_scope(
+        self,
+        connection,
+        principal: AuthenticatedPrincipal,
+    ) -> AuthorizedDocumentScope:
+        """Devuelve el alcance documental vigente dentro de la transacción caller-owned."""
+        current = self._authoritative_principal(connection, principal, "document.query")
+        families = self.repository.active_document_scope_families(connection, current.roles)
+        return AuthorizedDocumentScope(current.account_id, current.roles, families)
+
     def _invalidate_accounts(self, connection, actor: AuthenticatedPrincipal, account_ids: list[UUID], correlation: UUID) -> None:
         """Invalida sesiones y deja un evento minimizado por cada sesión afectada."""
         for session_id in self.repository.invalidate_sessions(connection, account_ids):
