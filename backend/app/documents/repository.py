@@ -17,6 +17,7 @@ from psycopg.rows import dict_row
 
 from app.documents.models import (
     DocumentNotFoundError,
+    DocumentProcessingError,
     DocumentRef,
     DocumentVersionRef,
     DocumentVersionState,
@@ -48,18 +49,43 @@ class DocumentsRepository:
         source_family: str,
         document_date=None,
     ) -> DocumentRef:
+        # El INSERT tolerante a conflictos cubre el caso en que la fila a bloquear aún no
+        # existe. La relectura posterior establece el punto de serialización para
+        # crear versiones y asignar su número dentro de la misma transacción.
+        connection.execute(
+            """INSERT INTO app.document
+               (id_documento, name, document_type, source_family, document_date)
+               VALUES (%s, %s, %s, %s, %s)
+               ON CONFLICT (id_documento) DO NOTHING""",
+            (id_documento, name, document_type, source_family, document_date),
+        )
         row = connection.execute(
-            "SELECT id_documento FROM app.document WHERE id_documento = %s FOR UPDATE",
+            """SELECT id_documento, name, document_type, source_family,
+                      document_date, active_version_id, invalidated_at
+                 FROM app.document
+                WHERE id_documento = %s
+                FOR UPDATE""",
             (id_documento,),
         ).fetchone()
         if row is None:
-            connection.execute(
-                """INSERT INTO app.document
-                   (id_documento, name, document_type, source_family, document_date)
-                   VALUES (%s, %s, %s, %s, %s)""",
-                (id_documento, name, document_type, source_family, document_date),
+            raise DocumentNotFoundError(
+                f"no fue posible crear o recuperar el documento: {id_documento}"
             )
-        return DocumentsRepository.get_document(connection, id_documento)
+        if (
+            row["name"] != name
+            or row["document_type"] != document_type
+            or row["source_family"] != source_family
+            or row["document_date"] != document_date
+        ):
+            raise DocumentProcessingError("identidad documental incompatible")
+        return DocumentRef(
+            id_documento=row["id_documento"],
+            name=row["name"],
+            document_type=row["document_type"],
+            source_family=row["source_family"],
+            active_version_id=row["active_version_id"],
+            invalidated=row["invalidated_at"] is not None,
+        )
 
     @staticmethod
     def get_document(connection: psycopg.Connection, id_documento: str) -> DocumentRef:
