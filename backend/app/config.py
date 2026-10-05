@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -45,6 +45,43 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1024
     # Si es False, el servicio arranca aunque el modelo no esté disponible.
     bge_m3_required_at_startup: bool = False
+
+    # --- Inferencia RAG mediante Groq ------------------------------------
+    # La clave real proviene únicamente del entorno protegido y no es obligatoria
+    # para arrancar rutas que no realizan generación.
+    groq_api_key: SecretStr | None = None
+    groq_model: str = "openai/gpt-oss-120b"
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    groq_timeout_seconds: float = 30.0
+    groq_max_request_bytes: int = 60_000
+
+    @field_validator("groq_model")
+    @classmethod
+    def validate_groq_model(cls, value: str) -> str:
+        if value != "openai/gpt-oss-120b":
+            raise ValueError("Modelo Groq no aprobado")
+        return value
+
+    @field_validator("groq_base_url")
+    @classmethod
+    def validate_groq_base_url(cls, value: str) -> str:
+        if value != "https://api.groq.com/openai/v1":
+            raise ValueError("Origen Groq no aprobado")
+        return value
+
+    @field_validator("groq_timeout_seconds")
+    @classmethod
+    def validate_groq_timeout(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("Timeout Groq no válido")
+        return value
+
+    @field_validator("groq_max_request_bytes")
+    @classmethod
+    def validate_groq_request_limit(cls, value: int) -> int:
+        if value <= 0 or value > 60_000:
+            raise ValueError("Límite de solicitud Groq no válido")
+        return value
 
     # --- CORS ---------------------------------------------------------------
     # Orígenes permitidos explícitos. No se usa "*" por defecto: permitir
