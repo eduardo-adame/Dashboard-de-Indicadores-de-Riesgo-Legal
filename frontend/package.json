@@ -3,19 +3,36 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Frontend del Dashboard de Indicadores de Riesgo Legal. Estructura mínima de arranque.",
+  "description": "Interfaz del Dashboard de Indicadores de Riesgo Legal.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test tests/*.test.mjs"
+    "test:static": "node --test tests/*.test.mjs",
+    "test:unit": "vitest run",
+    "test": "npm run test:static && npm run test:unit"
   },
   "dependencies": {
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "react-router-dom": "7.18.4",
+    "recharts": "3.10.1",
+    "react-is": "18.3.1",
+    "ionicons": "8.1.0",
+    "@fontsource/geist": "5.3.0",
+    "@fontsource/geist-mono": "5.3.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "4.3.4",
-    "vite": "6.0.7"
+    "vite": "6.4.3",
+    "tailwindcss": "3.4.19",
+    "postcss": "8.5.29",
+    "autoprefixer": "10.6.1",
+    "vitest": "4.1.11",
+    "jsdom": "26.1.0",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/user-event": "14.6.7"
   }
 }
