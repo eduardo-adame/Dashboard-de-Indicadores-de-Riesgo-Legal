@@ -25,7 +25,7 @@ from app.analytics.proactive_rules import (
     select_snapshot_closure, terminal_months_used, valid_fingerprint_contract,
 )
 from app.projection.models import ProjectionResult
-from app.security.models import SecurityError
+from app.security.models import AuthorizationError, SecurityError
 
 
 _RUN_NAMESPACE = UUID("ef79661e-3c23-4be1-8e8e-ff9dc54f5966")
@@ -132,6 +132,23 @@ class KpiQueryService:
             with self.repository.transaction() as connection:
                 self.security_service.revalidate_functional_access(connection, context.actor, "kpi.read")
                 return self.repository.list_observations(connection, kpi_code=query.kpi_code, period_start=query.period_start, period_end=query.period_end)
+        except SecurityError:
+            with self.repository.transaction() as connection:
+                self.audit_repository.write_audit_event(connection, actor=context.actor, action="AUTHORIZATION_DENIED", resource_type="KPI", resource_identifier=None, result="DENIED", correlation_id=context.correlation_id, safe_cause_code="DEFAULT_DENY")
+            raise
+
+    def list_for_dashboard(self, context, *, technical=False, reader):
+        """Mantiene la autorización vigente durante la lectura y su transformación."""
+        try:
+            with self.repository.transaction() as connection:
+                actor = self.security_service.revalidate_functional_access(connection, context.actor, "kpi.read")
+                if technical:
+                    if "TI" not in actor.roles:
+                        raise AuthorizationError("Acceso no autorizado")
+                else:
+                    self.security_service.revalidate_functional_access(connection, actor, "dashboard.read")
+                rows = self.repository.list_observations(connection, kpi_code="KPI-CD-03" if technical else None, period_start=None, period_end=None)
+                return reader(rows)
         except SecurityError:
             with self.repository.transaction() as connection:
                 self.audit_repository.write_audit_event(connection, actor=context.actor, action="AUTHORIZATION_DENIED", resource_type="KPI", resource_identifier=None, result="DENIED", correlation_id=context.correlation_id, safe_cause_code="DEFAULT_DENY")
@@ -330,6 +347,21 @@ class ProactiveAnalysisQueryService:
 
     def list_completed(self, query: ProactiveAnalysisQuery, context: ProactiveQueryContext) -> tuple[ProactiveAnalysisReadResult, ...]:
         return self._authorized_runs(query, context)
+
+    def list_for_dashboard(self, query, context, *, reader, latest_only=False):
+        """Expone metadatos persistidos sin ejecutar nuevamente el análisis."""
+        try:
+            with self.repository.transaction() as connection:
+                self.security_service.revalidate_functional_access(connection, context.actor, "dashboard.read")
+                current_run = self.repository.latest_completed_proactive_run(connection)
+                run_id = current_run["id"] if latest_only and current_run is not None else query.analytic_run_id
+                runs = [] if latest_only and current_run is None else self.repository.list_completed_proactive_runs(connection, run_id=run_id, period_start=query.period_start, period_end=query.period_end)
+                values = tuple((run, _proactive_read_result(self.repository, connection, run), self.repository.dashboard_finding_dates(connection, run["id"])) for run in runs)
+                return reader(values, current_run_id=None if current_run is None else current_run["id"])
+        except SecurityError:
+            with self.repository.transaction() as connection:
+                self.audit_repository.write_audit_event(connection, actor=context.actor, action="AUTHORIZATION_DENIED", resource_type="PROACTIVE_ANALYSIS", resource_identifier=None, result="DENIED", correlation_id=context.correlation_id, safe_cause_code="DEFAULT_DENY")
+            raise
 
     def _authorized_runs(self, query: ProactiveAnalysisQuery, context: ProactiveQueryContext) -> tuple[ProactiveAnalysisReadResult, ...]:
         try:

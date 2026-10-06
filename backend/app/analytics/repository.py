@@ -337,6 +337,14 @@ class AnalyticsRepository:
         ).fetchall()
 
     @staticmethod
+    def dashboard_finding_dates(connection, run_id: UUID):
+        """Recupera la fecha física sin modificar el contrato del motor analítico."""
+        return {row["id"]: row["created_at"] for row in connection.execute(
+            "SELECT id, created_at FROM app.finding WHERE analytic_run_id=%s AND proactive_evaluation_id IS NOT NULL",
+            (run_id,),
+        ).fetchall()}
+
+    @staticmethod
     def proactive_context_references(connection, run_id: UUID):
         return connection.execute(
             """SELECT c.* FROM app.context_reference c

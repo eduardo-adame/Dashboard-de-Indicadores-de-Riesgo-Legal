@@ -20,7 +20,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
+from app.analytics.api import router as analytics_router
+from app.audit.api import router as audit_router
 from app.coordination.api import router as coordination_router
+from app.documents.api import router as documents_router
 from app.db import check_database
 from app.embeddings import EmbeddingUnavailableError, get_embedding_service
 from app.ingestion.api import router as ingestion_router
@@ -81,6 +84,9 @@ app.include_router(ingestion_router)
 app.include_router(coordination_router)
 app.include_router(validation_router)
 app.include_router(rag_router)
+app.include_router(analytics_router)
+app.include_router(audit_router)
+app.include_router(documents_router)
 
 
 @app.get("/health", tags=["health"])

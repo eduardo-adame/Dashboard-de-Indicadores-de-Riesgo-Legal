@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 import json
 from typing import Iterator
 from uuid import UUID
@@ -190,29 +191,69 @@ class ValidationRepository:
         state: str | None = None,
         ingest_file_id: UUID | None = None,
         cause: str | None = None,
+        source_family: str | None = None,
+        rejected_from: datetime | None = None,
+        rejected_to: datetime | None = None,
+        limit: int | None = None,
+        after: tuple[datetime, UUID] | None = None,
     ) -> list[QuarantineItem]:
+        rows = ValidationRepository.quarantine_rows(
+            connection, state=state, ingest_file_id=ingest_file_id, cause=cause,
+            source_family=source_family, rejected_from=rejected_from,
+            rejected_to=rejected_to, limit=limit, after=after,
+        )
+        return [_row_to_item(row) for row in rows]
+
+    @staticmethod
+    def quarantine_rows(
+        connection: psycopg.Connection, *, state: str | None = None,
+        ingest_file_id: UUID | None = None, cause: str | None = None,
+        source_family: str | None = None, rejected_from: datetime | None = None,
+        rejected_to: datetime | None = None, limit: int | None = None,
+        after: tuple[datetime, UUID] | None = None,
+    ) -> list[dict[str, object]]:
+        """Filtra y pagina antes de entregar payloads; conserva procedencia nullable."""
         clauses = []
         params: dict[str, object] = {}
         if state is not None:
-            clauses.append("state = %(state)s")
+            clauses.append("q.state = %(state)s")
             params["state"] = state
         if ingest_file_id is not None:
-            clauses.append("ingest_file_id = %(file)s")
+            clauses.append("q.ingest_file_id = %(file)s")
             params["file"] = ingest_file_id
         if cause is not None:
-            clauses.append("cause_code = %(cause)s")
+            clauses.append("q.cause_code = %(cause)s")
             params["cause"] = cause
+        if source_family is not None:
+            clauses.append("f.source_family = %(family)s")
+            params["family"] = source_family
+        if rejected_from is not None:
+            clauses.append("q.created_at >= %(start)s")
+            params["start"] = rejected_from
+        if rejected_to is not None:
+            clauses.append("q.created_at <= %(end)s")
+            params["end"] = rejected_to
+        if after is not None:
+            clauses.append("(q.created_at, q.id) > (%(after_time)s, %(after_id)s)")
+            params["after_time"], params["after_id"] = after
+        suffix = ""
+        if limit is not None:
+            suffix = " LIMIT %(limit)s"
+            params["limit"] = limit
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = connection.execute(
-            f"""SELECT id, ingest_file_id, source_record_id, cause_code, state,
-                       original_payload, candidate_payload, discard_justification,
-                       operation_id, correlation_id, created_at
-                  FROM app.quarantine_item
+            f"""SELECT q.id, q.ingest_file_id, q.source_record_id, q.cause_code, q.state,
+                       q.original_payload, q.candidate_payload, q.discard_justification,
+                       q.operation_id, q.correlation_id, q.created_at,
+                       f.source_family, r.row_number
+                  FROM app.quarantine_item q
+                  LEFT JOIN app.ingest_file f ON f.id = q.ingest_file_id
+                  LEFT JOIN app.source_record r ON r.id = q.source_record_id
                   {where}
-                 ORDER BY created_at""",
+                 ORDER BY q.created_at, q.id{suffix}""",
             params,
         ).fetchall()
-        return [_row_to_item(row) for row in rows]
+        return rows
 
 
 def _row_to_item(row: dict[str, object]) -> QuarantineItem:

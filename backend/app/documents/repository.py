@@ -277,3 +277,92 @@ class DocumentsRepository:
                 correlation_id,
             ),
         )
+
+    @staticmethod
+    def list_ocr_operations(connection, *, query, after=None) -> list[dict]:
+        """Lee el último resultado OCR por versión, conservando nulos operativos."""
+        clauses, values = [], []
+        if query.document_id is not None:
+            clauses.append("d.id_documento = %s")
+            values.append(query.document_id)
+        if query.state is not None:
+            clauses.append("COALESCE(o.estado_ocr, 'Pendiente') = %s")
+            values.append(query.state)
+        for field, operator, value in (
+            ("processed_at", ">=", query.processed_from),
+            ("processed_at", "<=", query.processed_to),
+        ):
+            if value is not None:
+                clauses.append(f"o.{field} {operator} %s")
+                values.append(value)
+        if after is not None:
+            clauses.append("(v.created_at, v.id) < (%s, %s)")
+            values.extend(after)
+        where = " AND ".join(clauses) if clauses else "TRUE"
+        values.append(query.limit + 1)
+        return connection.execute(
+            """SELECT d.id_documento AS document_id, v.id AS document_version_id,
+                      d.name AS document_name, f.declared_name AS file_name,
+                      v.processing_state, COALESCE(o.estado_ocr, 'Pendiente') AS ocr_state,
+                      o.processed_at, o.confianza_agregada AS confidence,
+                      o.total_page_count, o.ocr_processed_page_count, o.granularity,
+                      v.created_at
+                 FROM app.document d
+                 JOIN app.document_version v ON v.id_documento = d.id_documento
+                 LEFT JOIN LATERAL (
+                     SELECT r.* FROM app.ocr_run r WHERE r.document_version_id = v.id
+                     ORDER BY r.processed_at DESC, r.id DESC LIMIT 1
+                 ) o ON TRUE
+                 LEFT JOIN app.ingest_file f ON f.id::text = d.id_documento
+                     AND f.stored_object_id = v.stored_object_id
+                WHERE """ + where + " ORDER BY v.created_at DESC, v.id DESC LIMIT %s",
+            values,
+        ).fetchall()
+
+    @staticmethod
+    def ocr_reprocess_source(connection, document_id: str, version_id: UUID):
+        """Corrobora procedencia mediante objeto, archivo y candidato persistidos."""
+        rows = connection.execute(
+            """SELECT v.id, v.id_documento, v.stored_object_id, v.processing_state,
+                      v.source_record_id, d.invalidated_at, f.id AS ingest_file_id,
+                      f.state AS file_state, f.technical_result, o.estado_ocr,
+                      EXISTS (SELECT 1 FROM app.quarantine_item q
+                              WHERE q.ingest_file_id = f.id AND q.state = 'Pendiente')
+                          AS quarantined,
+                      EXISTS (SELECT 1 FROM app.document_candidate_page p
+                              WHERE p.ingest_file_id = f.id AND p.requires_ocr)
+                          AS requires_ocr
+                 FROM app.document_version v
+                 JOIN app.document d ON d.id_documento = v.id_documento
+                 JOIN app.stored_object s ON s.id = v.stored_object_id
+                 JOIN app.ingest_file f ON f.stored_object_id = s.id
+                     AND f.id::text = d.id_documento
+                 JOIN app.document_candidate c ON c.ingest_file_id = f.id
+                 LEFT JOIN app.source_record r ON r.id = v.source_record_id
+                 LEFT JOIN LATERAL (
+                     SELECT estado_ocr FROM app.ocr_run WHERE document_version_id = v.id
+                     ORDER BY processed_at DESC, id DESC LIMIT 1
+                 ) o ON TRUE
+                WHERE v.id = %s AND d.id_documento = %s
+                  AND (v.source_record_id IS NULL OR r.ingest_file_id = f.id)""",
+            (version_id, document_id),
+        ).fetchall()
+        return rows[0] if len(rows) == 1 else None
+
+    @staticmethod
+    def ocr_operation_result(connection, operation_id: UUID):
+        return connection.execute(
+            """SELECT v.id AS document_version_id, v.id_documento AS document_id,
+                      v.stored_object_id, v.correlation_id, v.processing_state,
+                      COALESCE(o.estado_ocr, 'Pendiente') AS ocr_state,
+                      j.id AS kpi_job_id, j.state AS kpi_job_state
+                 FROM app.document_version v
+                 LEFT JOIN LATERAL (
+                     SELECT estado_ocr FROM app.ocr_run WHERE document_version_id = v.id
+                     ORDER BY processed_at DESC, id DESC LIMIT 1
+                 ) o ON TRUE
+                 LEFT JOIN app.job_run j ON j.operation_id = v.operation_id
+                     AND j.case_type = 'KPI_RECALCULATION'
+                WHERE v.operation_id = %s""",
+            (operation_id,),
+        ).fetchone()

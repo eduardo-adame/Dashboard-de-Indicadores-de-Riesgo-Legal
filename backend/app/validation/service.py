@@ -16,7 +16,7 @@ from types import MappingProxyType
 from uuid import UUID
 
 from app.ingestion.models import SourceFamily
-from app.security.models import AuthenticatedPrincipal, SecurityError
+from app.security.models import AuditPersistenceError, AuthenticatedPrincipal, SecurityError
 from app.validation.models import (
     QuarantineCause,
     ValidatedTabularRecord,
@@ -335,12 +335,87 @@ class ValidationService:
         ingest_file_id: UUID | None = None,
         cause: str | None = None,
         capability: str = "quarantine.read",
+        source_family: str | None = None,
+        rejected_from: datetime | None = None,
+        rejected_to: datetime | None = None,
+        limit: int | None = None,
+        after: tuple[datetime, UUID] | None = None,
     ) -> list[QuarantineItem]:
         with self.repository.transaction() as connection:
-            self._authorize(connection, context, capability)
-            return self.repository.list_quarantine(
-                connection, state=state, ingest_file_id=ingest_file_id, cause=cause
-            )
+            denied = self._query_authorization(connection, context, capability)
+            if denied is None:
+                items = self.repository.list_quarantine(
+                    connection, state=state, ingest_file_id=ingest_file_id, cause=cause,
+                    source_family=source_family, rejected_from=rejected_from,
+                    rejected_to=rejected_to, limit=limit, after=after,
+                )
+                for item in items:
+                    self._audit_view(connection, context, item.id)
+        if denied is not None:
+            raise denied
+        return items
+
+    def quarantine_page(
+        self, *, context: ValidationContext, limit: int = 100,
+        state: str | None = None, ingest_file_id: UUID | None = None,
+        cause: str | None = None, source_family: str | None = None,
+        rejected_from: datetime | None = None, rejected_to: datetime | None = None,
+        after: tuple[datetime, UUID] | None = None,
+    ) -> tuple[list[dict[str, object]], bool]:
+        """Confirma visualizaciones y lectura en una única transacción autorizada."""
+        if not 1 <= limit <= 200:
+            raise ValidationInvocationError("límite de consulta no válido")
+        if rejected_from is not None and rejected_to is not None and rejected_from > rejected_to:
+            raise ValidationInvocationError("rango de fechas no válido")
+        with self.repository.transaction() as connection:
+            denied = self._query_authorization(connection, context, "quarantine.read")
+            if denied is None:
+                rows = self.repository.quarantine_rows(
+                    connection, state=state, ingest_file_id=ingest_file_id, cause=cause,
+                    source_family=source_family, rejected_from=rejected_from,
+                    rejected_to=rejected_to, limit=limit + 1, after=after,
+                )
+                has_more = len(rows) > limit
+                rows = rows[:limit]
+                for row in rows:
+                    self._audit_view(connection, context, row["id"])
+        if denied is not None:
+            raise denied
+        return rows, has_more
+
+    def discard_for_http(self, *, item_id: UUID, justification: str, context: ValidationContext) -> QuarantineItem:
+        """Reutiliza descarte; confirma una denegación después del rollback de dominio."""
+        try:
+            return self.discard(item_id=item_id, justification=justification, context=context)
+        except AuditPersistenceError:
+            raise
+        except SecurityError:
+            with self.repository.transaction() as connection:
+                self._audit_denial(connection, context)
+            raise
+
+    def _query_authorization(self, connection, context: ValidationContext, capability: str) -> SecurityError | None:
+        try:
+            self.security.revalidate_functional_access(connection, context.actor, capability)
+        except SecurityError as exc:
+            self._audit_denial(connection, context)
+            return exc
+        return None
+
+    def _audit_denial(self, connection, context: ValidationContext) -> None:
+        self.repository.write_audit_event(
+            connection, actor=context.actor, action="AUTHORIZATION_DENIED",
+            resource_type="VALIDATION", resource_identifier=None, result="DENIED",
+            correlation_id=context.correlation_id, safe_cause_code="AUTHORIZATION_DENIED",
+        )
+
+    def _audit_view(self, connection, context: ValidationContext, item_id: UUID) -> None:
+        self.repository.write_audit_event(
+            connection, actor=context.actor, action="QUARANTINE_VIEW",
+            resource_type="QUARANTINE_ITEM", resource_identifier=str(item_id),
+            result="SUCCESS", correlation_id=context.correlation_id,
+            safe_cause_code=None,
+        )
 
     # -- internos -----------------------------------------------------------
     def _authorize(self, connection, context: ValidationContext, capability: str) -> None:

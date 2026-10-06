@@ -132,6 +132,8 @@ services:
       POSTGRES_PASSWORD: ${RUNTIME_POSTGRES_PASSWORD:?RUNTIME_POSTGRES_PASSWORD debe definirse en producto/.env}
       RUNTIME_POSTGRES_USER: ${RUNTIME_POSTGRES_USER:?RUNTIME_POSTGRES_USER debe definirse en producto/.env}
       POSTGRES_DB: ${POSTGRES_DB:-riesgo_legal}
+      AUDIT_POSTGRES_USER: ${AUDIT_POSTGRES_USER:-}
+      AUDIT_POSTGRES_PASSWORD: ${AUDIT_POSTGRES_PASSWORD:-}
       # --- Modelo de embeddings -------------------------------------------------
       # Raíz única de caché: las tres variables de localización del modelo
       # convergen en el mismo directorio. Si alguna apuntara a un directorio

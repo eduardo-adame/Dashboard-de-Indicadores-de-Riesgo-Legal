@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     postgres_password: str = ""
     postgres_db: str = "riesgo_legal"
 
+    # La identidad lectora no sustituye el runtime ni recibe credenciales de migración.
+    audit_postgres_user: str = ""
+    audit_postgres_password: SecretStr | None = None
+
     # --- Embeddings BGE-M3 --------------------------------------------------
     bge_m3_model_id: str = "BAAI/bge-m3"
     # Ruta dentro del contenedor; debe coincidir con el punto de montaje del
@@ -225,6 +229,16 @@ class Settings(BaseSettings):
             f"user={self.postgres_user} password={self.postgres_password} "
             f"dbname={self.postgres_db} connect_timeout=5"
         )
+
+    @property
+    def audit_psycopg_conninfo(self) -> str | None:
+        """No existe identidad de reserva cuando falta la configuración protegida."""
+        if not self.audit_postgres_user or not self.audit_postgres_password:
+            return None
+        from psycopg.conninfo import make_conninfo
+        return make_conninfo(host=self.postgres_host, port=self.postgres_port, dbname=self.postgres_db,
+                             user=self.audit_postgres_user,
+                             password=self.audit_postgres_password.get_secret_value(), connect_timeout=5)
 
 
 @lru_cache(maxsize=1)
