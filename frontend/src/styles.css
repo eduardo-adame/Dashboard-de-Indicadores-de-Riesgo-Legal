@@ -12,6 +12,10 @@
   button, input, select, textarea { font: inherit; }
   button:disabled { cursor: not-allowed; color: var(--text-disabled); }
   button { cursor: pointer; }
+  /* Foco visible para navegación por teclado conforme a WCAG 2.1 2.4.7 */
+  :focus-visible { outline: 2px solid var(--text-primary); outline-offset: 2px; }
+  /* Reduced motion: desactiva transiciones para usuarios que lo requieren */
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
 }
 @layer components {
   .button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 16px; border-radius: var(--radius-small); font-size: 12px; font-weight: 500; border: 1px solid transparent; }
@@ -28,7 +32,8 @@
   .nav-link[aria-current="page"] { background: var(--background-selected); color: var(--text-primary); font-weight: 500; }
   .badge { display: inline-flex; padding: 2px 7px; border: 1px solid var(--border-default); border-radius: var(--radius-small); font-size: 11px; }
   .kpi-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; align-items: start; }
-  .table-scroll { overflow-x: auto; border: 1px solid var(--border-default); border-radius: var(--radius-medium); background: var(--background-primary); }
+  /* Scroll horizontal controlado en tablas para evitar overflow no intencional */
+  .table-scroll { overflow-x: auto; border: 1px solid var(--border-default); border-radius: var(--radius-medium); background: var(--background-primary); -webkit-overflow-scrolling: touch; }
   .data-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
   .data-table th { background: var(--background-secondary); padding: var(--table-header-padding-y) var(--table-cell-padding-x); font-size: 12px; font-weight: 500; color: var(--text-secondary); }
   .data-table td { height: var(--table-row-height); padding: 8px var(--table-cell-padding-x); border-top: 1px solid var(--border-subtle); }

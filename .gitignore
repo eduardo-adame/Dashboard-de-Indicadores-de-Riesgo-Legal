@@ -122,6 +122,10 @@ bower_components/
 frontend/dist/
 frontend/build/
 frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
+playwright-report/
+test-results/
 
 # ------------------------------------------------------------------------------
 # 5. AIRFLOW

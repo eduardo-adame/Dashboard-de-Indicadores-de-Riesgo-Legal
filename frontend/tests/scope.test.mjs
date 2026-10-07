@@ -18,10 +18,11 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (path) => readFileSync(join(root, path), 'utf8')
 const pkg = JSON.parse(read('package.json'))
 test('ROBUSTNESS: dependencias exactas aprobadas y sin bibliotecas alternativas', () => {
-  const expected = { react: '18.3.1', 'react-dom': '18.3.1', 'react-router-dom': '7.18.4', recharts: '3.10.1', 'react-is': '18.3.1', ionicons: '8.1.0', '@fontsource/geist': '5.3.0', '@fontsource/geist-mono': '5.3.0', '@vitejs/plugin-react': '4.3.4', vite: '6.4.3', tailwindcss: '3.4.19', postcss: '8.5.29', autoprefixer: '10.6.1', vitest: '4.1.11', jsdom: '26.1.0', '@testing-library/react': '16.3.3', '@testing-library/dom': '10.4.1', '@testing-library/jest-dom': '7.0.1', '@testing-library/user-event': '14.6.7' }
+  // W4: @playwright/test 1.63.0 — fix GHSA-7mvr-c777-76hp (CVE-2025-59288).
+  const expected = { react: '18.3.1', 'react-dom': '18.3.1', 'react-router-dom': '7.18.4', recharts: '3.10.1', 'react-is': '18.3.1', ionicons: '8.1.0', '@fontsource/geist': '5.3.0', '@fontsource/geist-mono': '5.3.0', '@vitejs/plugin-react': '4.3.4', vite: '6.4.3', tailwindcss: '3.4.19', postcss: '8.5.29', autoprefixer: '10.6.1', vitest: '4.1.11', jsdom: '26.1.0', '@testing-library/react': '16.3.3', '@testing-library/dom': '10.4.1', '@testing-library/jest-dom': '7.0.1', '@testing-library/user-event': '14.6.7', '@playwright/test': '1.63.0' }
   assert.deepEqual({ ...pkg.dependencies, ...pkg.devDependencies }, expected)
   assert.equal(pkg.overrides, undefined)
-  for (const name of ['tailwindcss', 'postcss', 'autoprefixer', 'vite', 'vitest', '@testing-library/react']) assert.ok(name in pkg.devDependencies && !(name in pkg.dependencies))
+  for (const name of ['tailwindcss', 'postcss', 'autoprefixer', 'vite', 'vitest', '@testing-library/react', '@playwright/test']) assert.ok(name in pkg.devDependencies && !(name in pkg.dependencies))
 })
 test('ROBUSTNESS: lockfile contiene las versiones exactas sin Tinypool', () => {
   const lock = JSON.parse(read('package-lock.json'))
