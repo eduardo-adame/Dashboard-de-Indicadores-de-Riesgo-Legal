@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
 from uuid import UUID, uuid4
@@ -93,6 +94,74 @@ def _values(source_id: UUID, valid: bool = True) -> dict[str, object]:
     return {"ID_Contrato": f"C-{source_id.hex[:8]}", "Fecha_Solicitud": "2026-01-01", "Fecha_Firma": "2026-01-15", "Fecha_Vencimiento": "2026-12-31", "Estado_Revision": "No iniciado" if valid else "incorrecto"}
 
 
+def _additional_source(engine, file_id: UUID, row_number: int) -> UUID:
+    source_id = uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO app.source_record "
+                "(id, ingest_file_id, row_number, source_sheet, raw_payload, record_sha256, extraction_state) "
+                "VALUES (:id, :file, :row, 'CSV', '{}'::jsonb, :sha, 'EXTRAIDO')"
+            ),
+            {"id": source_id, "file": file_id, "row": row_number, "sha": bytes([row_number]) * 32},
+        )
+    return source_id
+
+
+def _preserve_proactive_snapshot(engine, observation: dict[str, object]) -> None:
+    job_id, run_id = uuid4(), uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                """INSERT INTO app.job_run
+                   (id, case_type, state, actor_process, result_references, operation_id, correlation_id)
+                   VALUES (:id, 'PROACTIVE_ANALYSIS', 'STARTED', 'integration-test', '{}'::jsonb,
+                           :operation, :correlation)"""
+            ),
+            {"id": job_id, "operation": uuid4(), "correlation": uuid4()},
+        )
+        connection.execute(
+            sa.text(
+                """INSERT INTO app.analytic_run
+                   (id, run_type, state, window_start, window_end, kpi_codes, dimensions,
+                    rules_reference, result, operation_id, correlation_id, completed_at)
+                   VALUES (:id, 'PROACTIVE_ANALYSIS', 'COMPLETED', :start, :end,
+                           ARRAY['KPI-RC-03'], '{}'::jsonb, '{}'::jsonb, 'SUCCESS',
+                           :operation, :correlation, CURRENT_TIMESTAMP)"""
+            ),
+            {
+                "id": run_id,
+                "start": observation["period_start"],
+                "end": observation["period_end"],
+                "operation": uuid4(),
+                "correlation": uuid4(),
+            },
+        )
+        connection.execute(
+            sa.text(
+                """INSERT INTO app.proactive_input_snapshot
+                   (id, analytic_run_id, job_run_id, source_observation_id,
+                    source_analytic_run_id, kpi_code, canonical_dimensions_key,
+                    period_start, period_end, as_of_date, availability, value, calculated_at)
+                   VALUES (:id, :run, :job, :observation, :source_run, 'KPI-RC-03',
+                           '{}'::jsonb, :start, :end, :as_of, :availability, :value, :calculated_at)"""
+            ),
+            {
+                "id": uuid4(),
+                "run": run_id,
+                "job": job_id,
+                "observation": observation["id"],
+                "source_run": observation["analytic_run_id"],
+                "start": observation["period_start"],
+                "end": observation["period_end"],
+                "as_of": observation["as_of_date"],
+                "availability": observation["availability"],
+                "value": observation["value"],
+                "calculated_at": observation["calculated_at"],
+            },
+        )
+
+
 def _services(conninfo: str):
     audit = SecurityRepository(conninfo)
     security = _Security(audit)
@@ -160,3 +229,103 @@ def test_failed_core_job_retries_without_duplicate_projection(database) -> None:
         assert connection.execute(sa.text("SELECT count(*) FROM app.record_application WHERE source_record_id=:id"), {"id": source_id}).scalar_one() == 1
         assert connection.execute(sa.text("SELECT count(*) FROM app.job_run WHERE operation_id=:id"), {"id": operation_id}).scalar_one() == 1
         assert connection.execute(sa.text("SELECT count(*) FROM app.kpi_observation")).scalar_one() >= 1
+
+
+@pytest.mark.requires_db
+@pytest.mark.data_schema
+def test_reinjection_recalculates_rc03_when_current_observation_has_historical_snapshot(database) -> None:
+    engine, conninfo = database
+    file_id, first_source, actor = _seed(engine)
+    second_source = _additional_source(engine, file_id, 2)
+    quarantined_source = _additional_source(engine, file_id, 3)
+    validation, integration, _ = _services(conninfo)
+    reference = datetime.now(UTC).date()
+    due_date = (reference + timedelta(days=30)).isoformat()
+
+    def values(source_id: UUID, *, valid: bool = True) -> dict[str, object]:
+        payload = _values(source_id, valid)
+        payload["Fecha_Vencimiento"] = due_date
+        return payload
+
+    initial_records = tuple(
+        ValidatedTabularRecord(
+            source_id,
+            SourceFamily.CONTRACTS_DOCUMENTS,
+            row_number,
+            MappingProxyType(values(source_id)),
+        )
+        for row_number, source_id in enumerate((first_source, second_source), start=1)
+    )
+    initial = integration.project_records(
+        records=initial_records,
+        operation_id=uuid4(),
+        correlation_id=uuid4(),
+        actor=actor,
+    )
+    assert initial.state == "COMPLETED"
+
+    validation.validate(
+        file_id=file_id,
+        family=SourceFamily.CONTRACTS_DOCUMENTS,
+        headers=tuple(values(quarantined_source)),
+        records=(TabularRecord(3, quarantined_source, values(quarantined_source, valid=False), 5),),
+        context=ValidationContext(uuid4(), uuid4(), actor),
+    )
+    with engine.connect() as connection:
+        item_id = connection.execute(
+            sa.text("SELECT id FROM app.quarantine_item WHERE source_record_id=:id"),
+            {"id": quarantined_source},
+        ).scalar_one()
+        before = connection.execute(
+            sa.text("SELECT * FROM app.kpi_observation WHERE kpi_code='KPI-RC-03'"),
+        ).mappings().one()
+    assert before["value"] == 2
+    _preserve_proactive_snapshot(engine, dict(before))
+
+    correlation_id = uuid4()
+    first = integration.reinject(
+        item_id=item_id,
+        corrected_payload=values(quarantined_source),
+        correlation_id=correlation_id,
+        actor=actor,
+        validation=validation,
+    )
+    second = integration.reinject(
+        item_id=item_id,
+        corrected_payload=values(quarantined_source),
+        correlation_id=uuid4(),
+        actor=actor,
+        validation=validation,
+    )
+
+    assert first.state == second.state == "COMPLETED"
+    assert first.job_id == second.job_id
+    with engine.connect() as connection:
+        assert connection.execute(
+            sa.text("SELECT value FROM app.kpi_observation WHERE kpi_code='KPI-RC-03'"),
+        ).scalar_one() == 3
+        assert connection.execute(
+            sa.text("SELECT count(*) FROM app.contract_record WHERE id_contrato=:id"),
+            {"id": values(quarantined_source)["ID_Contrato"]},
+        ).scalar_one() == 1
+        assert connection.execute(
+            sa.text("SELECT count(*) FROM app.kpi_observation WHERE kpi_code='KPI-RC-03'"),
+        ).scalar_one() == 1
+        audit = connection.execute(
+            sa.text(
+                "SELECT action, result FROM audit.event "
+                "WHERE correlation_id=:correlation ORDER BY occurred_at"
+            ),
+            {"correlation": correlation_id},
+        ).mappings().all()
+    assert {row["action"] for row in audit} >= {"QUARANTINE_REINJECT", "KPI_RECALCULATION"}
+    assert any(
+        row["action"] == "QUARANTINE_REINJECT" and row["result"] == "REINYECTADO"
+        for row in audit
+    )
+    assert all(
+        row["result"] == "SUCCESS"
+        for row in audit
+        if row["action"] == "KPI_RECALCULATION"
+    )
+    assert not any(row["result"] == "FAILURE" for row in audit)

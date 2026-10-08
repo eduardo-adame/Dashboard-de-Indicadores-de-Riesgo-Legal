@@ -67,12 +67,24 @@ class AnalyticsRepository:
     @staticmethod
     def upsert_observation(connection, observation: KpiObservationResult, run_id: UUID) -> None:
         dimensions = json.dumps(dict(observation.dimensions), ensure_ascii=False, sort_keys=True)
+        # La observación lógica se actualiza en sitio. Si un análisis proactivo ya
+        # inmovilizó su par observación/ejecución, se conserva ese vínculo histórico
+        # y la ejecución nueva queda trazada por su propio run, job y auditoría.
         connection.execute(
             """INSERT INTO app.kpi_observation
                (id, analytic_run_id, kpi_code, period_start, period_end, dimensions, value, availability, as_of_date)
                VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s)
                ON CONFLICT (kpi_code, period_start, period_end, dimensions) DO UPDATE
-               SET analytic_run_id=EXCLUDED.analytic_run_id, value=EXCLUDED.value,
+               SET analytic_run_id=CASE
+                       WHEN EXISTS (
+                           SELECT 1
+                             FROM app.proactive_input_snapshot snapshot
+                            WHERE snapshot.source_observation_id = app.kpi_observation.id
+                              AND snapshot.source_analytic_run_id = app.kpi_observation.analytic_run_id
+                       ) THEN app.kpi_observation.analytic_run_id
+                       ELSE EXCLUDED.analytic_run_id
+                   END,
+                   value=EXCLUDED.value,
                    availability=EXCLUDED.availability, as_of_date=EXCLUDED.as_of_date,
                    calculated_at=CURRENT_TIMESTAMP
                WHERE EXCLUDED.as_of_date >= app.kpi_observation.as_of_date""",
