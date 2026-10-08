@@ -52,10 +52,13 @@ test.describe('Analítica — Resumen ejecutivo', () => {
     await expect(page.getByRole('heading', { name: /resumen ejecutivo/i })).toBeVisible()
   })
 
-  test('muestra estado vacío sin KPI', async ({ page }) => {
+  test('muestra estado vacío sin KPI y preserva regiones de gráficas', async ({ page }) => {
     mockAnalytics(page, [])
     await page.goto('/')
     await expect(page.getByText(/sin indicadores principales/i)).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText(/evolución de exposición acumulada/i)).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText(/composición por severidad/i)).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText(/sin datos disponibles/i).first()).toBeVisible({ timeout: 8000 })
   })
 
   test('muestra KPI sintético con valor correcto', async ({ page }) => {
@@ -89,6 +92,13 @@ test.describe('Analítica — Riesgo contractual', () => {
     await expect(page.getByRole('heading', { name: /riesgo contractual/i })).toBeVisible()
   })
 
+  test('preserva contenedor de gráfica con empty state contextual cuando no hay datos', async ({ page }) => {
+    mockAnalytics(page, [])
+    await page.goto('/contratos')
+    await expect(page.getByText(/tiempo de ciclo del contrato/i)).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText(/no existen observaciones contractuales para los filtros seleccionados/i)).toBeVisible({ timeout: 8000 })
+  })
+
   test('filtros de periodo no cambian semántica de datos', async ({ page }) => {
     mockAnalytics(page, [buildKpiItem('KPI-CC-01', '7')])
     await page.goto('/contratos')
@@ -105,6 +115,13 @@ test.describe('Analítica — Gestión de litigios', () => {
     await page.goto('/litigios')
     await expect(page.getByRole('heading', { name: /gestión de litigios/i })).toBeVisible()
   })
+
+  test('preserva ambas superficies de gráficas independientemente cuando están vacías', async ({ page }) => {
+    mockAnalytics(page, [])
+    await page.goto('/litigios')
+    await expect(page.locator('figcaption').getByText(/exposición total por litigios activos/i)).toBeVisible({ timeout: 8000 })
+    await expect(page.locator('figcaption').getByText(/nuevos litigios por periodo/i)).toBeVisible({ timeout: 8000 })
+  })
 })
 
 test.describe('Analítica — Tendencias y riesgos', () => {
@@ -114,6 +131,13 @@ test.describe('Analítica — Tendencias y riesgos', () => {
     mockAnalytics(page, items)
     await page.goto('/tendencias')
     await expect(page.getByRole('heading', { name: /tendencias y riesgos/i })).toBeVisible()
+  })
+
+  test('preserva región de tendencias con estado vacío contextual cuando no hay observaciones', async ({ page }) => {
+    mockAnalytics(page, [])
+    await page.goto('/tendencias')
+    await expect(page.getByText(/tendencias de indicadores clave/i)).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText(/sin tendencias disponibles/i)).toBeVisible({ timeout: 8000 })
   })
 })
 
@@ -144,6 +168,17 @@ test.describe('Analítica — Responsive', () => {
       const box = await chart.boundingBox()
       expect(box?.width).toBeGreaterThan(0)
     }
+  })
+
+  test('bloque analítico vacío no produce desbordamiento horizontal en viewport estrecho', async ({ page }) => {
+    mockAnalytics(page, [])
+    await page.goto('/')
+    await expect(page.getByText(/sin indicadores principales/i)).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText(/evolución de exposición acumulada/i)).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText(/composición por severidad/i)).toBeVisible({ timeout: 8000 })
+    const bodyScrollWidth = await page.evaluate(() => document.body.scrollWidth)
+    const bodyClientWidth = await page.evaluate(() => document.body.clientWidth)
+    expect(bodyScrollWidth).toBeLessThanOrEqual(bodyClientWidth + 1)
   })
 })
 

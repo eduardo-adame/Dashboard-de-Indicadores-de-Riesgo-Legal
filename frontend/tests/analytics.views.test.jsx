@@ -16,7 +16,7 @@ vi.mock('recharts', () => {
   const Container = ({ children }) => <div>{children}</div>
   const Graph = ({ data, children }) => <div data-testid="chart" data-points={JSON.stringify(data)}>{children}</div>
   const Plot = ({ dataKey, connectNulls, type }) => <span data-testid="plot" data-key={dataKey} data-connect={String(connectNulls)} data-type={type} />
-  return { ResponsiveContainer: Container, BarChart: Graph, LineChart: Graph, CartesianGrid: () => null, XAxis: () => null, YAxis: () => null, Tooltip: () => null, Line: Plot, Bar: Plot }
+  return { ResponsiveContainer: Container, BarChart: Graph, LineChart: Graph, PieChart: Graph, Pie: Plot, Cell: () => null, CartesianGrid: () => null, XAxis: () => null, YAxis: () => null, Tooltip: () => null, Line: Plot, Bar: Plot }
 })
 const runId = '11111111-1111-4111-8111-111111111111'
 const contextId = '44444444-4444-4444-8444-444444444444'
@@ -131,5 +131,46 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
     const registry = buildRegistry({ analytics }); expect(registry.routes).toHaveLength(4)
     expect(registry.routes.every((route) => route.capability === 'dashboard.read')).toBe(true)
     expect(registry.navigation.map((item) => item.path)).toEqual(['/', '/contratos', '/litigios', '/tendencias'])
+  })
+  it('resumen ejecutivo con datasets vacíos preserva bloque 8/4 con ChartContainer, títulos y EmptyChartState sin datos inventados', async () => {
+    fixture({ view: 'summary', kpis: kpiPage([]), analysis: { current_analytic_run_id: null, alert_count: 0, items: [] } })
+    expect(await screen.findByText('Sin indicadores principales')).toBeVisible()
+    expect(screen.getByText('Evolución de exposición acumulada')).toBeVisible()
+    expect(screen.getByText('Composición por severidad')).toBeVisible()
+    expect(screen.getAllByText('Sin datos disponibles')).toHaveLength(2)
+    expect(screen.getByLabelText('Evolución de exposición acumulada: sin datos disponibles')).toBeInTheDocument()
+    expect(screen.getByLabelText('Composición por severidad: sin datos disponibles')).toBeInTheDocument()
+    expect(screen.queryAllByTestId('chart')).toHaveLength(0)
+    expect(screen.queryByText(/0 %/)).not.toBeInTheDocument()
+  })
+  it('contratos con dataset vacío preserva ChartContainer para tiempo de ciclo y muestra EmptyChartState contextual', async () => {
+    fixture({ view: 'contracts', kpis: kpiPage([]) })
+    expect(await screen.findByText('Tiempo de ciclo del contrato')).toBeVisible()
+    expect(screen.getByText('No existen observaciones contractuales para los filtros seleccionados.')).toBeVisible()
+    expect(screen.getByLabelText('Tiempo de ciclo del contrato: sin datos disponibles')).toBeInTheDocument()
+    expect(screen.queryAllByTestId('chart')).toHaveLength(0)
+  })
+  it('litigios con ambos datasets vacíos preserva ambas superficies de gráficas independientemente', async () => {
+    fixture({ view: 'litigation', kpis: kpiPage([]) })
+    expect(await screen.findByText('Exposición total por litigios activos')).toBeVisible()
+    expect(screen.getByText('Nuevos litigios por periodo')).toBeVisible()
+    expect(screen.getByLabelText('Exposición total por litigios activos: sin datos disponibles')).toBeInTheDocument()
+    expect(screen.getByLabelText('Nuevos litigios por periodo: sin datos disponibles')).toBeInTheDocument()
+    expect(screen.queryAllByTestId('chart')).toHaveLength(0)
+  })
+  it('litigios con estado mixto: una gráfica poblada y otra vacía conviven sin anularse', async () => {
+    fixture({ view: 'litigation', kpis: kpiPage([observation('KPI-LI-01', { value: '15.00' })]) })
+    expect((await screen.findAllByText('Exposición total por litigios activos')).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText('Nuevos litigios por periodo')).toBeVisible()
+    expect(screen.getAllByTestId('chart')).toHaveLength(1)
+    expect(screen.getByLabelText('Nuevos litigios por periodo: sin datos disponibles')).toBeInTheDocument()
+  })
+  it('tendencias con dataset vacío preserva región de tendencias con EmptyChartState contextual', async () => {
+    fixture({ view: 'trends', kpis: kpiPage([]) })
+    expect(await screen.findByText('Tendencias de indicadores clave')).toBeVisible()
+    expect(screen.getByText('Sin tendencias disponibles')).toBeVisible()
+    expect(screen.getByText('Aún no existen suficientes observaciones para mostrar una evolución temporal.')).toBeVisible()
+    expect(screen.getByLabelText('Tendencias de indicadores clave: sin tendencias disponibles')).toBeInTheDocument()
+    expect(screen.queryAllByTestId('chart')).toHaveLength(0)
   })
 })
