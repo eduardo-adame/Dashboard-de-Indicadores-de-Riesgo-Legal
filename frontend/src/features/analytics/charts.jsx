@@ -82,7 +82,7 @@ export function AnalyticsChart({
     <div className="grid grid-cols-1 gap-6">
       {series.map((item) => {
         const { data, keys } = contiguousLines(item.points)
-        const severity = { alto: 'var(--critical)', medio: 'var(--warning)', bajo: 'var(--success)' }[item.dimensions?.Nivel_Severidad]
+        const severity = { alto: 'var(--critical)', medio: 'var(--warning)', bajo: 'var(--success)' }[item.severity]
         const color = severity || 'var(--text-primary)'
         const title = customTitle && series.length === 1 ? customTitle : `${item.name} · ${item.dimensionsText}`
         const subtitle = customSubtitle || `Unidad: ${item.unit}. Solo periodos recibidos; no se imputan meses ni valores.`
@@ -130,6 +130,7 @@ export function AnalyticsChart({
 
 export function SeverityChart({
   items = [],
+  kpiCode = 'KPI-LI-01',
   title = 'Composición por severidad',
   subtitle = 'Distribución según clasificación de severidad recibida.',
   emptyTitle = 'Sin datos disponibles',
@@ -137,7 +138,8 @@ export function SeverityChart({
 }) {
   const severityRows = items.filter(
     (item) =>
-      item.dimensions?.Nivel_Severidad &&
+      item.kpi_code === kpiCode &&
+      item.severity &&
       item.availability === 'DISPONIBLE' &&
       item.value !== null &&
       Number.isFinite(Number(item.value))
@@ -154,7 +156,7 @@ export function SeverityChart({
   const totals = { alto: 0, medio: 0, bajo: 0 }
   let hasAny = false
   for (const row of severityRows) {
-    const sev = String(row.dimensions.Nivel_Severidad).toLowerCase()
+    const sev = row.severity
     if (sev in totals) {
       totals[sev] += Number(row.value)
       hasAny = true

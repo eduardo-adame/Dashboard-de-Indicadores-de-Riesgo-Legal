@@ -30,7 +30,10 @@ export function adaptKpis(data) {
   if (!object(data) || !Array.isArray(data.items) || !object(data.filters) || !['period_start', 'period_end', 'period_reference'].every((key) => data[key] === null || validDate(data[key]))) fail()
   const items = data.items.map((item, index) => {
     if (!object(item) || !code(item.kpi_code) || item.name !== KPI_CATALOG[item.kpi_code].name || item.unit !== KPI_CATALOG[item.kpi_code].unit || !['MVP-NÚCLEO', 'MVP-COMPLEMENTARIO'].includes(item.classification) || !object(item.dimensions) || typeof item.entity_filter_applicable !== 'boolean' || !['DISPONIBLE', 'NO_DISPONIBLE'].includes(item.availability) || !nullableDecimal(item.value) || (item.availability === 'NO_DISPONIBLE' && item.value !== null) || !validDate(item.period_start) || !validDate(item.period_end) || item.period_start > item.period_end || !validDate(item.as_of_date) || !timestamp(item.calculated_at)) fail()
-    return { ...item, id: `observation-${index}`, displayValue: formatValue(item.value, item.availability), dimensionsText: dimensionsLabel(item.dimensions), periodText: `${formatDate(item.period_start)} – ${formatDate(item.period_end)}`, entityText: item.entity_filter_applicable ? String(item.dimensions.entity) : 'No aplicable' }
+    const severity = ['alto', 'medio', 'bajo'].includes(item.dimensions.nivel_severidad)
+      ? item.dimensions.nivel_severidad
+      : null
+    return { ...item, id: `observation-${index}`, severity, displayValue: formatValue(item.value, item.availability), dimensionsText: dimensionsLabel(item.dimensions), periodText: `${formatDate(item.period_start)} – ${formatDate(item.period_end)}`, entityText: item.entity_filter_applicable ? String(item.dimensions.entity) : 'No aplicable' }
   })
   const identities = new Set()
   for (const item of items) { const key = `${seriesIdentity(item)}:${item.period_start}`; if (identities.has(key)) fail(); identities.add(key) }

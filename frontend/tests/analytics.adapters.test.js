@@ -22,7 +22,7 @@ describe('SRS_REQUIRED: adapters analíticos', () => {
     expect(adaptKpis(page([observation('KPI-RC-01', { value: null, availability: 'NO_DISPONIBLE' })])).items[0].displayValue).toBe('No disponible')
   })
   it('preserva dimensiones y entidad no aplicable sin inferir nombres', () => {
-    const item = adaptKpis(page([observation('KPI-CN-03', { dimensions: { Area: 'Área sintética', Nivel_Severidad: 'alto' } })])).items[0]
+    const item = adaptKpis(page([observation('KPI-CN-03', { dimensions: { area: 'Área sintética', nivel_severidad: 'alto' } })])).items[0]
     expect(item.dimensionsText).toContain('Área sintética'); expect(item.entityText).toBe('No aplicable')
   })
   it('selecciona RC03 por periodo sin sumarlo ni acumularlo', () => {
@@ -34,7 +34,7 @@ describe('SRS_REQUIRED: adapters analíticos', () => {
     expect(latestSeries(data.items, 'KPI-RC-03')[0].displayValue).toBe('No disponible')
   })
   it('no inventa moneda ni total al separar severidades litigiosas', () => {
-    const data = adaptKpis(page(['alto', 'medio', 'bajo'].map((Nivel_Severidad) => observation('KPI-LI-01', { dimensions: { Nivel_Severidad }, value: '12.50' }))))
+    const data = adaptKpis(page(['alto', 'medio', 'bajo'].map((nivel_severidad) => observation('KPI-LI-01', { dimensions: { nivel_severidad }, value: '12.50' }))))
     expect(chartSeries(data.items, 'KPI-LI-01')).toHaveLength(3)
     expect(data.items.every((row) => row.unit === 'importe' && !row.displayValue.includes('$'))).toBe(true)
   })

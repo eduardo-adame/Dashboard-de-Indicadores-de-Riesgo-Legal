@@ -6,7 +6,7 @@ import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { SessionProvider } from '../src/auth/SessionProvider.jsx'
 import { ApiError } from '../src/api/errors.js'
 import { AnalyticsPage } from '../src/features/analytics/pages.jsx'
-import { AnalyticsChart } from '../src/features/analytics/charts.jsx'
+import { AnalyticsChart, SeverityChart } from '../src/features/analytics/charts.jsx'
 import { adaptKpis, KPI_CATALOG } from '../src/features/analytics/adapters.js'
 import { buildRegistry } from '../src/routing/registry.jsx'
 import * as analytics from '../src/features/analytics/routes.jsx'
@@ -15,7 +15,7 @@ import * as analytics from '../src/features/analytics/routes.jsx'
 vi.mock('recharts', () => {
   const Container = ({ children }) => <div>{children}</div>
   const Graph = ({ data, children }) => <div data-testid="chart" data-points={JSON.stringify(data)}>{children}</div>
-  const Plot = ({ dataKey, connectNulls, type }) => <span data-testid="plot" data-key={dataKey} data-connect={String(connectNulls)} data-type={type} />
+  const Plot = ({ data, dataKey, connectNulls, type }) => <span data-testid="plot" data-points={data ? JSON.stringify(data) : undefined} data-key={dataKey} data-connect={String(connectNulls)} data-type={type} />
   return { ResponsiveContainer: Container, BarChart: Graph, LineChart: Graph, PieChart: Graph, Pie: Plot, Cell: () => null, CartesianGrid: () => null, XAxis: () => null, YAxis: () => null, Tooltip: () => null, Line: Plot, Bar: Plot }
 })
 const runId = '11111111-1111-4111-8111-111111111111'
@@ -46,7 +46,7 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
     expect(client.acquireRead.mock.calls.every(([path]) => /^\/dashboard\/(kpis|analysis)\?/.test(path))).toBe(true)
   })
   it('muestra KPI/contextos y diferencia cero de no disponible sin inventar moneda', async () => {
-    fixture({ kpis: kpiPage(Object.keys(KPI_CATALOG).map((code) => observation(code, code === 'KPI-RC-01' ? { availability: 'NO_DISPONIBLE', value: null } : code === 'KPI-LI-01' ? { dimensions: { Nivel_Severidad: 'alto' }, value: '17.50' } : {}))) })
+    fixture({ kpis: kpiPage(Object.keys(KPI_CATALOG).map((code) => observation(code, code === 'KPI-RC-01' ? { availability: 'NO_DISPONIBLE', value: null } : code === 'KPI-LI-01' ? { dimensions: { nivel_severidad: 'alto' }, value: '17.50' } : {}))) })
     expect(await screen.findByRole('heading', { name: 'Contexto operativo' })).toBeVisible()
     expect(screen.getAllByText('No disponible').length).toBeGreaterThan(0)
     expect(screen.getAllByText('0').length).toBeGreaterThan(0)
@@ -56,8 +56,8 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
   })
   it('muestra fecha de cálculo en cada dimensión sin alterar su decimal', async () => {
     fixture({ kpis: kpiPage([
-      observation('KPI-LI-01', { dimensions: { Nivel_Severidad: 'alto' }, value: '12.5000', calculated_at: '2030-02-01T01:02:03Z' }),
-      observation('KPI-LI-01', { dimensions: { Nivel_Severidad: 'medio' }, value: '0.000000000000000001', calculated_at: '2030-02-02T04:05:06Z' }),
+      observation('KPI-LI-01', { dimensions: { nivel_severidad: 'alto' }, value: '12.5000', calculated_at: '2030-02-01T01:02:03Z' }),
+      observation('KPI-LI-01', { dimensions: { nivel_severidad: 'medio' }, value: '0.000000000000000001', calculated_at: '2030-02-02T04:05:06Z' }),
     ]) })
     expect((await screen.findAllByText('12.5000')).length).toBeGreaterThan(0)
     expect(screen.getAllByText('0.000000000000000001').length).toBeGreaterThan(0)
@@ -142,6 +142,29 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
     expect(screen.getByLabelText('Composición por severidad: sin datos disponibles')).toBeInTheDocument()
     expect(screen.queryAllByTestId('chart')).toHaveLength(0)
     expect(screen.queryByText(/0 %/)).not.toBeInTheDocument()
+  })
+  it('compone severidades desde la dimensión canónica del DTO y no muestra estado vacío', () => {
+    const items = adaptKpis(kpiPage([
+      observation('KPI-LI-01', { dimensions: { nivel_severidad: 'alto' }, value: '200000' }),
+      observation('KPI-LI-01', { dimensions: { nivel_severidad: 'medio' }, value: '90000', period_start: '2030-02-01', period_end: '2030-02-28' }),
+      observation('KPI-LI-01', { dimensions: { nivel_severidad: 'bajo' }, value: '25000', period_start: '2030-03-01', period_end: '2030-03-31' }),
+      observation('KPI-CN-03', { dimensions: { area: 'Finanzas', nivel_severidad: 'medio' }, value: '1' }),
+    ])).items
+
+    render(<SeverityChart items={items} />)
+
+    expect(screen.queryByLabelText('Composición por severidad: sin datos disponibles')).not.toBeInTheDocument()
+    expect(screen.getByText('Alto:')).toBeVisible()
+    expect(screen.getByText('Medio:')).toBeVisible()
+    expect(screen.getByText('Bajo:')).toBeVisible()
+    expect(screen.getByText('200000')).toBeVisible()
+    expect(screen.getByText('90000')).toBeVisible()
+    expect(screen.getByText('25000')).toBeVisible()
+    expect(JSON.parse(screen.getByTestId('plot').dataset.points)).toEqual([
+      { name: 'Alto', value: 200000, color: 'var(--critical)' },
+      { name: 'Medio', value: 90000, color: 'var(--warning)' },
+      { name: 'Bajo', value: 25000, color: 'var(--success)' },
+    ])
   })
   it('contratos con dataset vacío preserva ChartContainer para tiempo de ciclo y muestra EmptyChartState contextual', async () => {
     fixture({ view: 'contracts', kpis: kpiPage([]) })
