@@ -193,7 +193,7 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
   it('litigios con ambos datasets vacíos preserva ambas superficies de gráficas independientemente', async () => {
     fixture({ view: 'litigation', kpis: kpiPage([]) })
     expect(await screen.findByText('Evolución de exposición litigiosa')).toBeVisible()
-    expect(screen.getByText('Nuevos litigios por periodo')).toBeVisible()
+    expect(screen.getByText('Nuevos litigios por periodo', { selector: 'figcaption' })).toBeVisible()
     expect(screen.getByLabelText('Evolución de exposición litigiosa: sin datos disponibles')).toBeInTheDocument()
     expect(screen.getByLabelText('Nuevos litigios por periodo: sin datos disponibles')).toBeInTheDocument()
     expect(screen.queryAllByTestId('chart')).toHaveLength(0)
@@ -201,7 +201,7 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
   it('litigios con estado mixto: una gráfica poblada y otra vacía conviven sin anularse', async () => {
     fixture({ view: 'litigation', kpis: kpiPage([observation('KPI-LI-01', { dimensions: { nivel_severidad: 'alto' }, value: '15.00' })]) })
     expect((await screen.findAllByText('Evolución de exposición litigiosa')).length).toBeGreaterThanOrEqual(1)
-    expect(screen.getByText('Nuevos litigios por periodo')).toBeVisible()
+    expect(screen.getByText('Nuevos litigios por periodo', { selector: 'figcaption' })).toBeVisible()
     expect(screen.getAllByTestId('chart')).toHaveLength(1)
     expect(screen.getByLabelText('Nuevos litigios por periodo: sin datos disponibles')).toBeInTheDocument()
   })
@@ -327,5 +327,52 @@ describe('SRS_REQUIRED: cinco slots ejecutivos y frontera de datos', () => {
     expect(screen.queryByLabelText('Indicadores principales')).not.toBeInTheDocument()
     expect(screen.queryByText('42')).not.toBeInTheDocument()
     expect(document.querySelectorAll('.kpi-metric')).toHaveLength(0)
+  })
+})
+
+describe('SRS_REQUIRED: slots estructurales de contratos y litigios', () => {
+  const slots = () => within(screen.getByLabelText('Indicadores principales')).getAllByRole('group')
+  it.each([['contracts', 1], ['litigation', 2]])('%s conserva %i slots ausentes y accesibilidad completa', async (view, count) => {
+    fixture({ view, kpis: kpiPage([]) })
+    await screen.findByLabelText('Indicadores principales')
+    expect(slots()).toHaveLength(count)
+    expect(slots().map((slot) => slot.dataset.state)).toEqual(Array(count).fill('NO_OBSERVATION'))
+    expect(within(screen.getByLabelText('Indicadores principales')).getAllByText('Sin observación para la selección')).toHaveLength(count)
+    expect(screen.queryByText('Sin indicadores principales')).not.toBeInTheDocument()
+    expect(document.querySelectorAll('.kpi-entry')).toHaveLength(0)
+  })
+  it.each([['contracts', 1], ['litigation', 2]])('%s loading conserva %i slots sin motion', (view, count) => {
+    fixture({ view, pending: true })
+    expect(document.querySelectorAll('.kpi-metric[data-state="LOADING"]')).toHaveLength(count)
+    expect(document.querySelectorAll('.kpi-entry')).toHaveLength(0)
+  })
+  it('RC01 de contexto no reemplaza al RC03 ausente ni incorpora otro dominio', async () => {
+    fixture({ view: 'contracts', kpis: kpiPage([observation('KPI-RC-01', { value: '5.5' }), observation('KPI-LI-05')]) })
+    await screen.findByLabelText('Indicadores principales')
+    expect(slots()).toHaveLength(1)
+    expect(slots()[0]).toHaveAttribute('aria-label', KPI_CATALOG['KPI-RC-03'].name)
+    expect(slots()[0]).toHaveAttribute('data-state', 'NO_OBSERVATION')
+    expect(screen.getByRole('heading', { name: 'Contexto operativo' })).toBeVisible()
+  })
+  it('litigios parcial mantiene LI01 ausente y LI05 cero observado', async () => {
+    fixture({ view: 'litigation', kpis: kpiPage([observation('KPI-LI-05')]) })
+    await screen.findByLabelText('Indicadores principales')
+    expect(slots().map((slot) => slot.dataset.state)).toEqual(['NO_OBSERVATION', 'ZERO'])
+  })
+  it('litigios ND dimensional y simple permanece compacto y distinto de cero', async () => {
+    fixture({ view: 'litigation', kpis: kpiPage([
+      ...['alto', 'medio', 'bajo'].map((level) => observation('KPI-LI-01', { dimensions: { nivel_severidad: level }, availability: 'NO_DISPONIBLE', value: null })),
+      observation('KPI-LI-05', { availability: 'NO_DISPONIBLE', value: null }),
+    ]) })
+    await screen.findByLabelText('Indicadores principales')
+    expect(slots().map((slot) => slot.dataset.state)).toEqual(['NO_DISPONIBLE', 'NO_DISPONIBLE'])
+    expect(within(slots()[0]).getByText('No disponible')).toHaveClass('text-[14px]', 'leading-5')
+    expect(screen.queryByText('Por dimensión')).not.toBeInTheDocument()
+  })
+  it.each([['contracts', 403], ['contracts', 503], ['litigation', 403], ['litigation', 503]])('%s error %i preserva boundary sin slots falsos', async (view, error) => {
+    fixture({ view, error })
+    expect((await screen.findAllByRole('alert'))[0]).toHaveTextContent(error === 403 ? 'Sin autorización' : 'No se pudo completar')
+    expect(document.querySelectorAll('.kpi-metric')).toHaveLength(0)
+    expect(screen.queryByLabelText('Indicadores principales')).not.toBeInTheDocument()
   })
 })

@@ -11,9 +11,9 @@ import { EmptyState, ErrorState, ResourceState } from '../../components/feedback
 import { formatDate, formatTimestamp, validDate } from '../../shared/formatters.js'
 import { writeQuery } from '../../shared/query.js'
 import { analyticsFilters, analyticsPaths, FILTER_VALIDATORS, PERIODS, RISKS } from './api.js'
-import { adaptAnalysis, adaptKpis, KPI_CATALOG, latestSeries, ruleLabel } from './adapters.js'
+import { adaptAnalysis, adaptKpis, KPI_CATALOG, ruleLabel } from './adapters.js'
 import { ChartLoadingState, ExposureEvolutionChart, LitigationExposureChart, ObservationTable, SeverityChart, TemporalChart } from './charts.jsx'
-import { resolveExecutiveKpis } from './executiveKpis.js'
+import { resolveDomainKpis, resolveExecutiveKpis } from './executiveKpis.js'
 
 const configs = {
   summary: { title: 'Resumen ejecutivo', risk: 'all', description: 'Indicadores, contexto y hallazgos persistidos del riesgo legal.' },
@@ -56,15 +56,13 @@ function Filters({ filters, entities, setParams }) {
   </FilterBar>{error && <p role="alert" className="mt-2 text-xs text-[var(--critical)]">El rango personalizado requiere fechas válidas y ordenadas.</p>}</form>
 }
 
-function MetricGroup({ data }) {
-  const codes = Object.keys(KPI_CATALOG).filter((code) => KPI_CATALOG[code].core)
-  const present = codes.filter((code) => data.items.some((item) => item.kpi_code === code))
-  return <section aria-label="Indicadores principales"><KpiRow>{present.map((code) => {
-    const rows = latestSeries(data.items, code)
-    if (rows.length === 1) return <KpiMetric key={code} label={rows[0].name} displayValue={rows[0].displayValue} shortContext={rows[0].unit} previousContext={rows[0].periodText} delta={<span className="text-muted">Cálculo: {formatTimestamp(rows[0].calculated_at)}</span>} />
-    const lastPeriod = rows.reduce((latest, row) => row.period_start > latest ? row.period_start : latest, rows[0].period_start)
-    return <KpiMetric key={code} label={KPI_CATALOG[code].name} displayValue="Por dimensión" shortContext="" previousContext={`Periodo: ${lastPeriod.slice(0, 7)}`} delta={<span className="text-muted">Desglose en gráfica y tabla</span>} />
-  })}</KpiRow>{!present.length && <EmptyState title="Sin indicadores principales" />}</section>
+function MetricSlots({ slots, enter = false }) {
+  return <section aria-label="Indicadores principales"><KpiRow>{slots.map((slot, index) => <KpiMetric key={slot.code} label={slot.name} displayValue={slot.displayValue} accessibleValue={slot.accessibleValue} valueKind={slot.valueKind} state={slot.state} entryIndex={enter ? index : undefined} shortContext={slot.shortContext} previousContext={slot.previousContext} delta={<span className="truncate text-muted">{slot.dimensional ? 'Desglose en gráfica y tabla' : slot.calculatedAt ? `Cálculo: ${formatTimestamp(slot.calculatedAt)}` : 'Sin resultado recibido'}</span>} />)}</KpiRow></section>
+}
+
+function DomainMetricGroup({ data, view, riskType }) {
+  const slots = resolveDomainKpis({ view, items: data.items, riskType }).filter((slot) => slot.state !== 'NOT_APPLICABLE')
+  return <MetricSlots slots={slots} />
 }
 
 function ExecutiveMetricGroup({ data, riskType, entryIdentity, entryLedger }) {
@@ -72,7 +70,7 @@ function ExecutiveMetricGroup({ data, riskType, entryIdentity, entryLedger }) {
   const [enter] = useState(() => entryLedger.current !== entryIdentity)
   useEffect(() => { entryLedger.current = entryIdentity }, [entryIdentity, entryLedger])
   const slots = resolveExecutiveKpis({ items: data.items, riskType }).filter((slot) => slot.state !== 'NOT_APPLICABLE')
-  return <section aria-label="Indicadores principales"><KpiRow>{slots.map((slot, index) => <KpiMetric key={slot.code} label={slot.name} displayValue={slot.displayValue} accessibleValue={slot.accessibleValue} valueKind={slot.valueKind} state={slot.state} entryIndex={enter ? index : undefined} shortContext={slot.shortContext} previousContext={slot.previousContext} delta={<span className="truncate text-muted">{slot.dimensional ? 'Desglose en gráfica y tabla' : slot.calculatedAt ? `Cálculo: ${formatTimestamp(slot.calculatedAt)}` : 'Sin resultado recibido'}</span>} />)}</KpiRow></section>
+  return <MetricSlots slots={slots} enter={enter} />
 }
 
 function FindingList({ run, principal }) {
@@ -102,8 +100,8 @@ function ObservationSections({ data }) {
 
 function KpiVisuals({ data, view, riskType, entryIdentity, entryLedger }) {
   if (view === 'summary') return <><ExecutiveMetricGroup key={entryIdentity} data={data} riskType={riskType} entryIdentity={entryIdentity} entryLedger={entryLedger} /><div className="grid grid-cols-1 gap-8 xl:grid-cols-12"><div className="min-w-0 xl:col-span-8"><ExposureEvolutionChart items={data.items} /></div><div className="min-w-0 xl:col-span-4"><SeverityChart items={data.items} /></div></div></>
-  if (view === 'contracts') return <><MetricGroup data={data} /><TemporalChart items={data.items} kpiCode="KPI-RC-01" title="Tiempo de ciclo del contrato" subtitle="Promedio mensual en días; no se imputan periodos ni valores." unit="días" emptyMessage="No existen observaciones contractuales para los filtros seleccionados." /></>
-  if (view === 'litigation') return <><MetricGroup data={data} /><div className="space-y-8"><LitigationExposureChart items={data.items} /><TemporalChart items={data.items} kpiCode="KPI-LI-05" title="Nuevos litigios por periodo" subtitle="Conteo por mes natural recibido; los meses sin observación no se fabrican." unit="litigios" emptyMessage="Aún no existen observaciones para los filtros seleccionados." /></div></>
+  if (view === 'contracts') return <><DomainMetricGroup data={data} view={view} riskType={riskType} /><TemporalChart items={data.items} kpiCode="KPI-RC-01" title="Tiempo de ciclo del contrato" subtitle="Promedio mensual en días; no se imputan periodos ni valores." unit="días" emptyMessage="No existen observaciones contractuales para los filtros seleccionados." /></>
+  if (view === 'litigation') return <><DomainMetricGroup data={data} view={view} riskType={riskType} /><div className="space-y-8"><LitigationExposureChart items={data.items} /><TemporalChart items={data.items} kpiCode="KPI-LI-05" title="Nuevos litigios por periodo" subtitle="Conteo por mes natural recibido; los meses sin observación no se fabrican." unit="litigios" emptyMessage="Aún no existen observaciones para los filtros seleccionados." /></div></>
   return null
 }
 
@@ -122,7 +120,7 @@ export function AnalyticsPage({ view = 'summary' }) {
   const changeRun = (id) => setParams(writeQuery({ ...filters.raw, analytic_run_id: id }, FILTER_VALIDATORS))
   const filterBlock = <><Filters filters={filters} entities={entities} setParams={setParams} /><p className="text-xs text-secondary">{filters.analysisMode === 'current' ? 'Vigente: último análisis completado. Los indicadores muestran los últimos seis meses completos disponibles.' : 'Histórico: selección de periodos naturales o ejecución completada.'}</p></>
   const analysisBlock = <ValidatedResource resource={analysis} adapt={adaptAnalysis} loading={<ChartLoadingState label="Cargando…" charts={1} />}>{(data) => <AnalysisContent data={data} mode={filters.analysisMode} principal={principal} selectRun={changeRun} />}</ValidatedResource>
-  const loadingSlots = view === 'summary' ? resolveExecutiveKpis({ riskType: filters.risk_type, resourceState: 'LOADING' }).filter((slot) => slot.state !== 'NOT_APPLICABLE') : undefined
+  const loadingSlots = view === 'trends' ? undefined : (view === 'summary' ? resolveExecutiveKpis : resolveDomainKpis)({ view, riskType: filters.risk_type, resourceState: 'LOADING' }).filter((slot) => slot.state !== 'NOT_APPLICABLE')
   const kpiBlock = !can(principal, 'dashboard.read') ? <ErrorState error={new ApiError(403)} /> : <ValidatedResource resource={kpis} adapt={adaptKpis} loading={<ChartLoadingState label="Cargando…" charts={view === 'summary' || view === 'litigation' ? 2 : 1} showKpis={view !== 'trends'} kpiSlots={loadingSlots} />}>{(data) => <div className="space-y-8"><KpiVisuals data={data} view={view} riskType={filters.risk_type} entryIdentity={entryIdentity} entryLedger={entryLedger} />{view !== 'summary' && view !== 'trends' && <ObservationSections data={data} />}{view === 'trends' && <ObservationSections data={data} />}</div>}</ValidatedResource>
   return <div className="space-y-8"><PageHeader title={config.title} description={config.description} />{corrected && <p role="status" className="text-xs text-secondary">Se retiraron filtros no válidos de la dirección.</p>}{view === 'summary' ? <>{kpiBlock}{analysisBlock}{filterBlock}{can(principal, 'dashboard.read') && kpis.data && (() => { try { return <ObservationSections data={adaptKpis(kpis.data)} /> } catch { return null } })()}</> : view === 'trends' ? <>{analysisBlock}{filterBlock}{kpiBlock}</> : <>{filterBlock}{kpiBlock}{analysisBlock}</>}</div>
 }

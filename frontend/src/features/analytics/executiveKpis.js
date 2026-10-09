@@ -12,6 +12,11 @@ export const EXECUTIVE_KPI_CATALOG = Object.freeze([
   ['KPI-LI-05', 'litigation'], ['KPI-CN-02', 'compliance'], ['KPI-CN-03', 'compliance'],
 ].map(([code, domain]) => Object.freeze({ code, domain, ...KPI_CATALOG[code] })))
 
+export const DOMAIN_KPI_CATALOGS = Object.freeze({
+  contracts: Object.freeze(EXECUTIVE_KPI_CATALOG.filter((entry) => entry.domain === 'contractual')),
+  litigation: Object.freeze(EXECUTIVE_KPI_CATALOG.filter((entry) => entry.domain === 'litigation')),
+})
+
 const isZero = (value) => /^-?0+(?:\.0+)?$/.test(value)
 const usable = (row) => row.availability === 'DISPONIBLE' && row.value !== null
 const contextKey = (row) => JSON.stringify(Object.entries(row.dimensions).filter(([key]) => key !== 'nivel_severidad').sort(([a], [b]) => a.localeCompare(b)))
@@ -56,12 +61,20 @@ function resolveValue(entry, items) {
   return { state: isZero(row.value) ? 'ZERO' : 'VALUE', displayValue: row.displayValue, accessibleValue: row.displayValue, rawValue: row.value, valueKind: 'number', shortContext: entry.unit, rows }
 }
 
-export function resolveExecutiveKpis({ items = [], riskType = 'all', resourceState = null } = {}) {
-  return EXECUTIVE_KPI_CATALOG.map((entry) => {
+export function resolveKpiCatalog(catalog, { items = [], riskType = 'all', resourceState = null } = {}) {
+  return catalog.map((entry) => {
     const result = riskType !== 'all' && riskType !== entry.domain
       ? stateValue('NOT_APPLICABLE')
       : resourceState ? stateValue(resourceState) : resolveValue(entry, items)
     const latest = result.rows.reduce((selected, row) => !selected || row.calculated_at > selected.calculated_at ? row : selected, null)
     return { ...entry, ...result, previousContext: latest?.periodText || '', calculatedAt: latest?.calculated_at || null }
   })
+}
+
+export function resolveExecutiveKpis(options = {}) {
+  return resolveKpiCatalog(EXECUTIVE_KPI_CATALOG, options)
+}
+
+export function resolveDomainKpis({ view, ...options }) {
+  return resolveKpiCatalog(DOMAIN_KPI_CATALOGS[view], options)
 }
