@@ -1,6 +1,6 @@
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { SessionProvider } from '../src/auth/SessionProvider.jsx'
@@ -61,7 +61,7 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
     ]) })
     expect((await screen.findAllByText('12.5000')).length).toBeGreaterThan(0)
     expect(screen.getAllByText('0.000000000000000001').length).toBeGreaterThan(0)
-    expect(screen.getByText('Por dimensión')).toBeVisible()
+    expect(screen.getByText('Desglose disponible')).toBeVisible()
     expect(screen.getByText('Desglose en gráfica y tabla')).toBeVisible()
   })
   it('muestra backend alert_count y contexto RF048 sin seleccionar documentos', async () => {
@@ -127,7 +127,7 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
   it('conserva lectura vacía sin convertirla en riesgo', async () => {
     fixture({ kpis: kpiPage([]), analysis: { current_analytic_run_id: null, alert_count: 0, items: [] } })
     expect(await screen.findByText('Sin análisis completados')).toBeVisible()
-    expect(screen.getByText('Sin indicadores principales')).toBeVisible(); expect(screen.getByText('0 alertas')).toBeVisible()
+    expect(within(screen.getByLabelText('Indicadores principales')).getAllByText('Sin observación')).toHaveLength(5); expect(screen.getByText('0 alertas')).toBeVisible()
   })
   it('loading no muestra valores cero provisionales', () => { fixture({ pending: true }); expect(screen.getAllByText('Cargando…')).toHaveLength(2); expect(screen.queryByText('0')).not.toBeInTheDocument() })
   it.each([401, 403, 422, 503])('muestra error %i sin contenido previo', async (error) => {
@@ -150,7 +150,8 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
   })
   it('resumen ejecutivo con datasets vacíos preserva bloque 8/4 con ChartContainer, títulos y EmptyChartState sin datos inventados', async () => {
     fixture({ view: 'summary', kpis: kpiPage([]), analysis: { current_analytic_run_id: null, alert_count: 0, items: [] } })
-    expect(await screen.findByText('Sin indicadores principales')).toBeVisible()
+    await screen.findByLabelText('Indicadores principales')
+    expect(within(screen.getByLabelText('Indicadores principales')).getAllByText('Sin observación')).toHaveLength(5)
     expect(screen.getByText('Evolución de exposición acumulada')).toBeVisible()
     expect(screen.getByText('Composición por severidad')).toBeVisible()
     expect(screen.getAllByText('Sin datos disponibles')).toHaveLength(2)
@@ -247,5 +248,84 @@ describe('SRS_REQUIRED: certificación visual de partición y hallazgos', () => 
     expect(card).toHaveTextContent('Generado:')
     expect(card.querySelector('.badge')).toBeNull()
     expect(screen.queryAllByTestId('chart')).toHaveLength(0)
+  })
+})
+
+describe('SRS_REQUIRED: cinco slots ejecutivos y frontera de datos', () => {
+  const mainSlots = () => within(screen.getByLabelText('Indicadores principales')).getAllByRole('group')
+  it('una sola observación LI05=0 mantiene cinco slots y cuatro ausencias accesibles', async () => {
+    fixture({ kpis: kpiPage([observation('KPI-LI-05')]) })
+    await screen.findByLabelText('Indicadores principales')
+    expect(mainSlots()).toHaveLength(5)
+    expect(mainSlots().map((slot) => slot.dataset.state)).toEqual(['NO_OBSERVATION', 'NO_OBSERVATION', 'ZERO', 'NO_OBSERVATION', 'NO_OBSERVATION'])
+    const expandedStates = within(screen.getByLabelText('Indicadores principales')).getAllByText('Sin observación para la selección')
+    expect(expandedStates).toHaveLength(4)
+    expandedStates.forEach((state) => expect(state).toHaveClass('sr-only'))
+    within(screen.getByLabelText('Indicadores principales')).getAllByText('Sin observación').forEach((state) => expect(state).toHaveAttribute('aria-hidden', 'true'))
+    expect(screen.queryByText('Sin indicadores principales')).not.toBeInTheDocument()
+  })
+  it('all-data conserva total exacto LI01 y CN03 dimensional en una sola card', async () => {
+    fixture({ kpis: kpiPage([
+      observation('KPI-RC-03'), observation('KPI-LI-05'), observation('KPI-CN-02'),
+      ...['alto', 'medio', 'bajo'].map((level) => observation('KPI-LI-01', { value: { alto: '200000', medio: '90000', bajo: '25000' }[level], dimensions: { nivel_severidad: level } })),
+      observation('KPI-CN-03', { value: '1', dimensions: { area: 'Legal', nivel_severidad: 'medio' } }),
+      observation('KPI-CN-03', { value: '2', dimensions: { area: 'Finanzas', nivel_severidad: 'alto' } }),
+    ]) })
+    await screen.findByLabelText('Indicadores principales')
+    expect(mainSlots()).toHaveLength(5)
+    expect(mainSlots()[1]).toHaveTextContent('$315,000 MXN')
+    expect(mainSlots()[4]).toHaveTextContent('Desglose disponible')
+    expect(mainSlots()[4].querySelector('.kpi-value-slot')).not.toHaveTextContent('3')
+  })
+  it('all-ND dimensional conserva No disponible y presentación compacta', async () => {
+    fixture({ kpis: kpiPage([
+      ...['alto', 'medio', 'bajo'].map((level) => observation('KPI-LI-01', { value: null, availability: 'NO_DISPONIBLE', dimensions: { nivel_severidad: level } })),
+      ...['Legal', 'Finanzas'].map((area) => observation('KPI-CN-03', { value: null, availability: 'NO_DISPONIBLE', dimensions: { area, nivel_severidad: 'alto' } })),
+    ]) })
+    await screen.findByLabelText('Indicadores principales')
+    expect(mainSlots()[1]).toHaveAttribute('data-state', 'NO_DISPONIBLE')
+    expect(mainSlots()[4]).toHaveAttribute('data-state', 'NO_DISPONIBLE')
+    expect(within(mainSlots()[1]).getByText('No disponible')).toHaveClass('text-[14px]', 'leading-5')
+    expect(within(mainSlots()[0]).getByText('Sin observación')).toHaveClass('text-[14px]', 'leading-5')
+    expect(screen.queryByText('Por dimensión')).not.toBeInTheDocument()
+  })
+  it('loading emplea cinco skeletons con la misma primitiva de altura y fila final', () => {
+    fixture({ pending: true })
+    const skeletons = document.querySelectorAll('.kpi-row > .kpi-metric[data-state="LOADING"]')
+    expect(skeletons).toHaveLength(5)
+    expect(skeletons[0].parentElement).toHaveClass('kpi-row-five')
+    expect(screen.queryByText('0')).not.toBeInTheDocument()
+  })
+  it('el filtro litigation no muestra dominios no aplicables como si faltaran observaciones', async () => {
+    fixture({ search: '?period=current_month&risk_type=litigation', kpis: kpiPage([]) })
+    await screen.findByLabelText('Indicadores principales')
+    expect(mainSlots().map((slot) => slot.getAttribute('aria-label'))).toEqual([KPI_CATALOG['KPI-LI-01'].name, KPI_CATALOG['KPI-LI-05'].name])
+    expect(mainSlots().map((slot) => slot.dataset.state)).toEqual(['NO_OBSERVATION', 'NO_OBSERVATION'])
+  })
+  it.each([403, 503])('error KPI %i no produce cinco ceros ni tarjetas de datos', async (error) => {
+    fixture({ error })
+    const alerts = await screen.findAllByRole('alert')
+    expect(alerts[0]).toHaveTextContent(error === 403 ? 'Sin autorización' : 'No se pudo completar')
+    expect(document.querySelectorAll('.kpi-metric')).toHaveLength(0)
+    expect(screen.queryByLabelText('Indicadores principales')).not.toBeInTheDocument()
+  })
+  it('sin dashboard.read no muestra skeletons, tarjetas ni observaciones aun con respuesta fixture', async () => {
+    fixture({ roles: [] })
+    expect(screen.getByRole('alert')).toHaveTextContent('Sin autorización')
+    await screen.findByText('0 alertas')
+    expect(document.querySelectorAll('.kpi-metric')).toHaveLength(0)
+    expect(screen.queryByRole('heading', { name: 'Observaciones recibidas' })).not.toBeInTheDocument()
+  })
+  it('un error después de cambiar filtros elimina las cifras anteriores sin reemplazarlas por ceros', async () => {
+    const client = fixture({ kpis: kpiPage([observation('KPI-RC-03', { value: '42' })]) })
+    await screen.findByLabelText('Indicadores principales')
+    expect(mainSlots()[0]).toHaveTextContent('42')
+    client.acquireRead.mockImplementation(() => ({ promise: Promise.reject(new ApiError(503)), release: vi.fn() }))
+    await userEvent.selectOptions(screen.getByLabelText('Tipo de riesgo'), 'litigation')
+    await userEvent.click(screen.getByRole('button', { name: 'Aplicar filtros' }))
+    await screen.findAllByRole('alert')
+    expect(screen.queryByLabelText('Indicadores principales')).not.toBeInTheDocument()
+    expect(screen.queryByText('42')).not.toBeInTheDocument()
+    expect(document.querySelectorAll('.kpi-metric')).toHaveLength(0)
   })
 })

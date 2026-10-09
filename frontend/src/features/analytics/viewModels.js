@@ -13,12 +13,14 @@ function chartNumber(item) {
   return Number.isFinite(number) && Math.abs(number) <= Number.MAX_SAFE_INTEGER && normalize(String(number)) === normalize(item.value) ? number : null
 }
 
-function sumDecimals(values) {
+export function sumDecimals(values) {
   const precision = Math.max(...values.map((value) => String(value).split('.')[1]?.length || 0))
   const factor = 10n ** BigInt(precision)
   const total = values.reduce((sum, value) => {
-    const [integer, fraction = ''] = String(value).split('.')
-    return sum + BigInt(integer) * factor + BigInt(fraction.padEnd(precision, '0') || '0')
+    const text = String(value)
+    const [integer, fraction = ''] = text.replace(/^-/, '').split('.')
+    const magnitude = BigInt(integer) * factor + BigInt(fraction.padEnd(precision, '0') || '0')
+    return sum + (text.startsWith('-') ? -magnitude : magnitude)
   }, 0n)
   const sign = total < 0n ? '-' : ''
   const absolute = total < 0n ? -total : total

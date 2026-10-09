@@ -32,6 +32,7 @@
   .nav-link[aria-current="page"] { background: var(--background-selected); color: var(--text-primary); font-weight: 500; }
   .badge { display: inline-flex; padding: 2px 7px; border: 1px solid var(--border-default); border-radius: var(--radius-small); font-size: 11px; }
   .kpi-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; align-items: start; }
+  .kpi-metric { height: var(--kpi-card-height); }
   /* Scroll horizontal controlado en tablas para evitar overflow no intencional */
   .table-scroll { overflow-x: auto; border: 1px solid var(--border-default); border-radius: var(--radius-medium); background: var(--background-primary); -webkit-overflow-scrolling: touch; }
   .data-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }

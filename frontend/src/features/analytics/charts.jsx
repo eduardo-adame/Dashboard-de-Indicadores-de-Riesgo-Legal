@@ -1,6 +1,6 @@
 import React from 'react'
 import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { DataTable } from '../../components/data.jsx'
+import { DataTable, KpiRow, KpiSkeleton } from '../../components/data.jsx'
 import { formatDate, formatTimestamp } from '../../shared/formatters.js'
 import {
   exposureEvolutionViewModel,
@@ -84,8 +84,8 @@ export function EmptyChartState({ chartTitle = '', title = 'Sin datos disponible
   return <div role="region" aria-label={ariaLabel} className={`flex h-[260px] min-w-0 flex-col items-center justify-center rounded-panel border border-dashed border-border bg-secondary/30 p-6 text-center ${className}`}><p className="text-sm font-medium text-secondary">{title}</p>{message && <p className="mt-1 max-w-sm text-xs text-muted">{message}</p>}</div>
 }
 
-export function ChartLoadingState({ label = 'Cargando…', charts = 1, showKpis = false }) {
-  return <section role="status" aria-live="polite" aria-label={label} className="space-y-6"><span className="text-xs text-secondary">{label}</span>{showKpis && <div className="kpi-row border-b border-border pb-6" aria-hidden="true">{Array.from({ length: 5 }, (_, index) => <div key={index} className="h-[112px] rounded-panel bg-secondary" />)}</div>}{Array.from({ length: charts }, (_, index) => <div key={index} aria-hidden="true" className="h-[360px] rounded-panel border border-border bg-secondary" />)}</section>
+export function ChartLoadingState({ label = 'Cargando…', charts = 1, showKpis = false, kpiSlots = Array.from({ length: 5 }, (_, index) => ({ code: index })) }) {
+  return <section role="status" aria-live="polite" aria-label={label}><span className={showKpis ? 'sr-only' : 'text-xs text-secondary'}>{label}</span>{showKpis && <KpiRow>{kpiSlots.map((slot) => <KpiSkeleton key={slot.code} label={slot.name} />)}</KpiRow>}<div className="space-y-6">{Array.from({ length: charts }, (_, index) => <div key={index} aria-hidden="true" className="h-[360px] rounded-panel border border-border bg-secondary" />)}</div></section>
 }
 
 export function ExposureEvolutionChart({ items = [] }) {

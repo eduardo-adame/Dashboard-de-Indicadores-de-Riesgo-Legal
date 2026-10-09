@@ -55,7 +55,7 @@ test.describe('Analítica — Resumen ejecutivo', () => {
   test('muestra estado vacío sin KPI y preserva regiones de gráficas', async ({ page }) => {
     mockAnalytics(page, [])
     await page.goto('/')
-    await expect(page.getByText(/sin indicadores principales/i)).toBeVisible({ timeout: 8000 })
+    await expect(page.locator('.kpi-row').getByText('Sin observación', { exact: true })).toHaveCount(5)
     await expect(page.getByText(/evolución de exposición acumulada/i)).toBeVisible({ timeout: 8000 })
     await expect(page.getByText(/composición por severidad/i)).toBeVisible({ timeout: 8000 })
     await expect(page.getByText(/sin datos disponibles/i).first()).toBeVisible({ timeout: 8000 })
@@ -174,7 +174,7 @@ test.describe('Analítica — Responsive', () => {
   test('bloque analítico vacío no produce desbordamiento horizontal en viewport estrecho', async ({ page }) => {
     mockAnalytics(page, [])
     await page.goto('/')
-    await expect(page.getByText(/sin indicadores principales/i)).toBeVisible({ timeout: 8000 })
+    await expect(page.locator('.kpi-row').getByText('Sin observación', { exact: true })).toHaveCount(5)
     await expect(page.getByText(/evolución de exposición acumulada/i)).toBeVisible({ timeout: 8000 })
     await expect(page.getByText(/composición por severidad/i)).toBeVisible({ timeout: 8000 })
     const bodyScrollWidth = await page.evaluate(() => document.body.scrollWidth)
