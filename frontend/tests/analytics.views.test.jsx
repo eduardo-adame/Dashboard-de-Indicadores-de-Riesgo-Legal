@@ -135,13 +135,16 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
     expect(screen.queryByText('Análisis completado sin hallazgos.')).not.toBeInTheDocument()
     if (error === 403) expect(alerts[0]).toHaveTextContent('Sin autorización')
   })
-  it('incluye alternativa tabular y rompe líneas donde faltan meses sin inventarlos', () => {
+  it('incluye alternativa tabular y meses ausentes sin fabricar conteos', () => {
     const items = adaptKpis(kpiPage([observation('KPI-LI-05', { value: '3' }), observation('KPI-LI-05', { value: '8', period_start: '2030-03-01', period_end: '2030-03-31' })])).items
     render(<TemporalChart items={items} kpiCode="KPI-LI-05" title="Serie temporal" subtitle="Prueba" unit="litigios" />)
     expect(screen.getByRole('table')).toBeInTheDocument()
     const points = JSON.parse(screen.getByTestId('chart').getAttribute('data-points'))
-    expect(points.map((row) => row.month)).toEqual(['2030-01', '2030-03']); expect(screen.getAllByTestId('plot')).toHaveLength(2)
-    expect(screen.getAllByTestId('plot').every((plot) => plot.dataset.connect === 'false' && plot.dataset.type === 'linear')).toBe(true)
+    expect(points.map((row) => row.month)).toEqual(['2030-01', '2030-02', '2030-03'])
+    expect(points.map((row) => row.value)).toEqual([3, null, 8])
+    expect(screen.getAllByTestId('plot')).toHaveLength(1)
+    expect(screen.getByTestId('plot').dataset.key).toBe('value')
+    expect(screen.getByRole('table')).toHaveTextContent('Sin observación')
   })
   it('registry descubre cuatro rutas distintas protegidas', () => {
     const registry = buildRegistry({ analytics }); expect(registry.routes).toHaveLength(4)

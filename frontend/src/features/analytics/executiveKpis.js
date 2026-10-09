@@ -1,5 +1,5 @@
 import { KPI_CATALOG } from './adapters.js'
-import { formatCurrencyMXN, sumDecimals } from './viewModels.js'
+import { formatCurrencyMXN, hasCompleteExposurePartition, sumDecimals } from './viewModels.js'
 
 export const EXECUTIVE_KPI_STATES = Object.freeze({
   VALUE: 'VALUE', ZERO: 'ZERO', NO_DISPONIBLE: 'NO_DISPONIBLE',
@@ -19,7 +19,6 @@ export const DOMAIN_KPI_CATALOGS = Object.freeze({
 
 const isZero = (value) => /^-?0+(?:\.0+)?$/.test(value)
 const usable = (row) => row.availability === 'DISPONIBLE' && row.value !== null
-const contextKey = (row) => JSON.stringify(Object.entries(row.dimensions).filter(([key]) => key !== 'nivel_severidad').sort(([a], [b]) => a.localeCompare(b)))
 
 function stateValue(state, rows = []) {
   const displayValue = {
@@ -48,10 +47,7 @@ function resolveValue(entry, items) {
   if (!available.length) return stateValue('NO_OBSERVATION', rows)
   if (entry.code === 'KPI-CN-03') return dimensionalValue(rows)
   if (entry.code === 'KPI-LI-01') {
-    const complete = rows.length === 3 && available.length === 3
-      && ['alto', 'medio', 'bajo'].every((severity) => available.filter((row) => row.severity === severity).length === 1)
-      && available.every((row) => contextKey(row) === contextKey(available[0]) && row.period_end === available[0].period_end)
-    if (!complete) return dimensionalValue(rows)
+    if (!hasCompleteExposurePartition(rows)) return dimensionalValue(rows)
     // Suma exacta de presentación de una partición autorizada, sin crear observaciones.
     const total = sumDecimals(available.map((row) => row.value))
     return { state: isZero(total) ? 'ZERO' : 'VALUE', displayValue: formatCurrencyMXN(total), accessibleValue: formatCurrencyMXN(total), rawValue: total, valueKind: 'number', shortContext: '', rows }

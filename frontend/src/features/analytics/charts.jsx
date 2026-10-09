@@ -7,10 +7,12 @@ import {
   formatCompactCurrencyMXN,
   formatCount,
   formatDays,
+  SEVERITIES,
   litigationExposureViewModel,
   severityCompositionViewModel,
   temporalSeriesViewModel,
 } from './viewModels.js'
+import { AXIS_UNITS, chartAxisConfig } from './chartAxes.js'
 
 const AXIS_TICK = Object.freeze({ fill: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: 11 })
 const axisProps = Object.freeze({ axisLine: { stroke: 'var(--border-default)' }, tickLine: false, tick: AXIS_TICK })
@@ -59,10 +61,22 @@ function SeriesTooltip({ active, payload, series, valueText = (row, key) => row[
   return <TooltipSurface title={row.periodText || row.month} rows={visible.map(({ key, label }) => ({ label, value: valueText(row, key) }))} />
 }
 
-function SingleValueTooltip({ active, payload, formatter }) {
+export function TemporalTooltip({ active, payload, label, rows = [], unit }) {
+  const row = payload?.find((item) => item.payload)?.payload || rows.find((item) => item.month === label)
+  if (!active || !row) return null
+  const value = row.availability === 'NO_OBSERVATION' ? 'Sin observación'
+    : row.availability === 'NO_DISPONIBLE' ? 'No disponible'
+      : unit === 'días' ? formatDays(row.rawValue) : formatCount(row.rawValue?.replace(/\.0+$/, ''), unit)
+  return <TooltipSurface title={row.periodText || row.month} rows={[{ label: unit === 'días' ? 'Tiempo de ciclo' : 'Nuevos litigios', value }]} />
+}
+
+export function ExposureTooltip({ active, payload }) {
   const row = payload?.find((item) => item.payload)?.payload
   if (!active || !row) return null
-  return <TooltipSurface title={row.periodText || row.month} rows={[{ label: 'Valor', value: formatter(row.value) }]} />
+  const values = SEVERITIES.filter(({ key }) => row[`${key}Availability`] !== undefined).map(({ key, label }) => ({ label, value: row[`${key}Text`] }))
+  if (row.complete) values.unshift({ label: 'Total', value: row.totalText })
+  if (row.contextKey && row.contextKey !== '[]') values.unshift({ label: 'Contexto', value: row.contextText })
+  return <TooltipSurface title={row.periodText || row.month} rows={values.length ? values : [{ label: 'Disponibilidad', value: 'Sin observación' }]} />
 }
 
 function CompositionTooltip({ active, payload }) {
@@ -113,25 +127,31 @@ export function TemporalChart({ items = [], kpiCode, title, subtitle, unit, empt
   const rows = temporalSeriesViewModel(items, kpiCode)
   if (!rows.length) return <ChartContainer title={title} subtitle={subtitle}><EmptyChartState chartTitle={title} message={emptyMessage} /></ChartContainer>
   const { data, keys } = segmentedLines(rows, 'value')
-  const formatter = unit === 'días' ? formatDays : (value) => formatCount(value, unit)
-  return <ChartContainer title={title} subtitle={subtitle} footer={<DataTable caption={`Datos de ${title}`} columns={[{ key: 'periodText', label: 'Periodo' }, { key: 'valueText', label: 'Valor', numeric: true }, { key: 'availability', label: 'Disponibilidad', render: (row) => row.availability === 'DISPONIBLE' ? 'Disponible' : 'No disponible' }]} rows={rows} />}>
-    <div className="h-[260px] min-w-0" aria-hidden="true"><ResponsiveContainer width="100%" height="100%" minWidth={0}><LineChart data={data} margin={{ left: 4, right: 12 }}><CartesianGrid vertical={false} stroke="var(--border-subtle)" /><XAxis dataKey="month" {...axisProps} /><YAxis {...axisProps} tickFormatter={(value) => unit === 'días' ? `${value} d` : String(value)} width={48} /><Tooltip content={<SingleValueTooltip formatter={formatter} />} />{keys.map((key) => <Line key={key} type="linear" dataKey={key} stroke="var(--text-primary)" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} isAnimationActive={false} />)}</LineChart></ResponsiveContainer></div>
+  const count = kpiCode === 'KPI-LI-05'
+  const Graph = count ? BarChart : LineChart
+  const axis = chartAxisConfig(count ? AXIS_UNITS.COUNT : AXIS_UNITS.DAYS, rows.map((row) => row.value))
+  return <ChartContainer title={title} subtitle={subtitle} footer={<DataTable caption={`Datos de ${title}`} columns={[{ key: 'periodText', label: 'Periodo' }, { key: 'valueText', label: 'Valor', numeric: true }, { key: 'unit', label: 'Unidad' }, { key: 'availability', label: 'Disponibilidad', render: (row) => row.availability === 'NO_OBSERVATION' ? 'Sin observación' : row.availability === 'DISPONIBLE' ? 'Disponible' : 'No disponible' }]} rows={rows} />}>
+    <div className="h-[260px] min-w-0" aria-hidden="true"><ResponsiveContainer width="100%" height="100%" minWidth={0}><Graph data={count ? rows : data} margin={{ left: 4, right: 12 }}><CartesianGrid vertical={false} stroke="var(--border-subtle)" /><XAxis dataKey="month" {...axisProps} /><YAxis {...axisProps} {...axis} width={48} /><Tooltip filterNull={false} content={<TemporalTooltip rows={rows} unit={unit} />} />{count ? <Bar dataKey="value" name="Nuevos litigios" fill="var(--chart-bar-1)" barSize={32} isAnimationActive={false} /> : keys.map((key) => <Line key={key} type="linear" dataKey={key} stroke="var(--text-primary)" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} isAnimationActive={false} />)}</Graph></ResponsiveContainer></div>
   </ChartContainer>
 }
 
 export function LitigationExposureChart({ items = [] }) {
   const model = litigationExposureViewModel(items)
   const title = 'Evolución de exposición litigiosa'
-  if (!model.rows.length) return <ChartContainer title={title} subtitle="Total contractual derivado únicamente con la partición completa; severidad alta cuando está disponible."><EmptyChartState chartTitle={title} /></ChartContainer>
+  if (!model.rows.length) return <ChartContainer title={title} subtitle="Total litigioso derivado únicamente con la partición completa; severidad alta cuando está disponible."><EmptyChartState chartTitle={title} /></ChartContainer>
   const series = [
     ...(model.hasTotal ? [{ key: 'total', label: 'Total', color: 'var(--text-primary)' }] : []),
     ...(model.hasHigh ? [{ key: 'high', label: 'Alta', color: 'var(--critical)' }] : []),
   ]
-  const { data, keys } = mergeSegmented(model.rows, series)
-  const columns = [{ key: 'periodText', label: 'Periodo' }, ...(model.hasTotal ? [{ key: 'totalText', label: 'Total', numeric: true }] : []), ...(model.hasHigh ? [{ key: 'highText', label: 'Alta', numeric: true }] : [])]
-  return <ChartContainer title={title} subtitle="Total disponible solo cuando el periodo contiene alto, medio y bajo; no se completan observaciones ausentes." footer={<DataTable caption={`Datos de ${title}`} columns={columns} rows={model.rows} />}>
+  const columns = [{ key: 'periodText', label: 'Periodo' }, { key: 'contextText', label: 'Contexto' }, ...SEVERITIES.map(({ key, label }) => ({ key: `${key}Text`, label, numeric: true })), ...(model.hasTotal ? [{ key: 'totalText', label: 'Total', numeric: true, render: (row) => row.complete ? row.totalText : 'Partición incompleta' }] : [])]
+  return <ChartContainer title={title} subtitle="Total disponible solo con alto, medio y bajo del mismo periodo y contexto; no se completan observaciones ausentes." footer={<DataTable caption={`Datos de ${title}`} columns={columns} rows={model.rows} />}>
     <ChartLegend items={series} />
-    <div className="h-[260px] min-w-0" aria-hidden="true"><ResponsiveContainer width="100%" height="100%" minWidth={0}><LineChart data={data} margin={{ left: 10, right: 12 }}><CartesianGrid vertical={false} stroke="var(--border-subtle)" /><XAxis dataKey="month" {...axisProps} /><YAxis {...axisProps} tickFormatter={formatCompactCurrencyMXN} width={62} /><Tooltip content={<SeriesTooltip series={series} />} />{series.flatMap((seriesItem) => keys[seriesItem.key].map((key) => <Line key={key} type="linear" dataKey={key} name={seriesItem.label} stroke={seriesItem.color} strokeWidth={2} dot={{ r: 3 }} connectNulls={false} isAnimationActive={false} />))}</LineChart></ResponsiveContainer></div>
+    <div className="space-y-5">{model.traces.map((trace) => {
+      const { data, keys } = mergeSegmented(trace.rows, series)
+      const values = trace.rows.flatMap((row) => [row.total, row.high])
+      const hasCoordinates = values.some((value) => typeof value === 'number' && Number.isFinite(value))
+      return <div key={trace.id} className="min-w-0 space-y-2">{(model.traces.length > 1 || trace.rows[0].contextKey !== '[]') && <p className="text-xs text-secondary">{trace.label}</p>}{hasCoordinates ? <div className="h-[260px] min-w-0" aria-hidden="true"><ResponsiveContainer width="100%" height="100%" minWidth={0}><LineChart data={data} margin={{ left: 10, right: 12 }}><CartesianGrid vertical={false} stroke="var(--border-subtle)" /><XAxis dataKey="month" {...axisProps} /><YAxis {...axisProps} {...chartAxisConfig(AXIS_UNITS.MXN, values)} width={62} /><Tooltip filterNull={false} content={<ExposureTooltip />} />{series.flatMap((seriesItem) => keys[seriesItem.key].map((key) => <Line key={key} type="linear" dataKey={key} name={seriesItem.label} stroke={seriesItem.color} strokeWidth={2} dot={{ r: 3 }} connectNulls={false} isAnimationActive={false} />))}</LineChart></ResponsiveContainer></div> : <EmptyChartState chartTitle={title} title={trace.rows.every((row) => row.sources?.every((item) => item.availability === 'NO_DISPONIBLE')) ? 'No disponible' : 'Sin datos disponibles'} message="Las observaciones recibidas se conservan en la tabla; no hay una serie representable de total o severidad alta." />}</div>
+    })}</div>
   </ChartContainer>
 }
 
