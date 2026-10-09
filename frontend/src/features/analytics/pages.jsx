@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useSession } from '../../auth/SessionProvider.jsx'
 import { can } from '../../auth/permissions.js'
@@ -67,9 +67,12 @@ function MetricGroup({ data }) {
   })}</KpiRow>{!present.length && <EmptyState title="Sin indicadores principales" />}</section>
 }
 
-function ExecutiveMetricGroup({ data, riskType }) {
+function ExecutiveMetricGroup({ data, riskType, entryIdentity, entryLedger }) {
+  // La decisión permanece estable durante el montaje; el refetch conserva el registro del padre.
+  const [enter] = useState(() => entryLedger.current !== entryIdentity)
+  useEffect(() => { entryLedger.current = entryIdentity }, [entryIdentity, entryLedger])
   const slots = resolveExecutiveKpis({ items: data.items, riskType }).filter((slot) => slot.state !== 'NOT_APPLICABLE')
-  return <section aria-label="Indicadores principales"><KpiRow>{slots.map((slot) => <KpiMetric key={slot.code} label={slot.name} displayValue={slot.displayValue} accessibleValue={slot.accessibleValue} valueKind={slot.valueKind} state={slot.state} shortContext={slot.shortContext} previousContext={slot.previousContext} delta={<span className="truncate text-muted">{slot.dimensional ? 'Desglose en gráfica y tabla' : slot.calculatedAt ? `Cálculo: ${formatTimestamp(slot.calculatedAt)}` : 'Sin resultado recibido'}</span>} />)}</KpiRow></section>
+  return <section aria-label="Indicadores principales"><KpiRow>{slots.map((slot, index) => <KpiMetric key={slot.code} label={slot.name} displayValue={slot.displayValue} accessibleValue={slot.accessibleValue} valueKind={slot.valueKind} state={slot.state} entryIndex={enter ? index : undefined} shortContext={slot.shortContext} previousContext={slot.previousContext} delta={<span className="truncate text-muted">{slot.dimensional ? 'Desglose en gráfica y tabla' : slot.calculatedAt ? `Cálculo: ${formatTimestamp(slot.calculatedAt)}` : 'Sin resultado recibido'}</span>} />)}</KpiRow></section>
 }
 
 function FindingList({ run, principal }) {
@@ -97,8 +100,8 @@ function ObservationSections({ data }) {
   return <><section className="space-y-3"><h2 className="text-base font-semibold">Observaciones recibidas</h2><ObservationTable items={data.items.filter((row) => KPI_CATALOG[row.kpi_code].core)} /></section><section className="space-y-3"><h2 className="text-base font-semibold">Contexto operativo</h2><p className="text-xs text-secondary">Estos indicadores no generan señales ejecutivas.</p><ObservationTable items={data.items.filter((row) => !KPI_CATALOG[row.kpi_code].core)} /></section></>
 }
 
-function KpiVisuals({ data, view, riskType }) {
-  if (view === 'summary') return <><ExecutiveMetricGroup data={data} riskType={riskType} /><div className="grid grid-cols-1 gap-8 xl:grid-cols-12"><div className="min-w-0 xl:col-span-8"><ExposureEvolutionChart items={data.items} /></div><div className="min-w-0 xl:col-span-4"><SeverityChart items={data.items} /></div></div></>
+function KpiVisuals({ data, view, riskType, entryIdentity, entryLedger }) {
+  if (view === 'summary') return <><ExecutiveMetricGroup key={entryIdentity} data={data} riskType={riskType} entryIdentity={entryIdentity} entryLedger={entryLedger} /><div className="grid grid-cols-1 gap-8 xl:grid-cols-12"><div className="min-w-0 xl:col-span-8"><ExposureEvolutionChart items={data.items} /></div><div className="min-w-0 xl:col-span-4"><SeverityChart items={data.items} /></div></div></>
   if (view === 'contracts') return <><MetricGroup data={data} /><TemporalChart items={data.items} kpiCode="KPI-RC-01" title="Tiempo de ciclo del contrato" subtitle="Promedio mensual en días; no se imputan periodos ni valores." unit="días" emptyMessage="No existen observaciones contractuales para los filtros seleccionados." /></>
   if (view === 'litigation') return <><MetricGroup data={data} /><div className="space-y-8"><LitigationExposureChart items={data.items} /><TemporalChart items={data.items} kpiCode="KPI-LI-05" title="Nuevos litigios por periodo" subtitle="Conteo por mes natural recibido; los meses sin observación no se fabrican." unit="litigios" emptyMessage="Aún no existen observaciones para los filtros seleccionados." /></div></>
   return null
@@ -108,6 +111,9 @@ export function AnalyticsPage({ view = 'summary' }) {
   const config = configs[view]
   const [params, setParams] = useSearchParams(); const { principal } = useSession()
   const filters = analyticsFilters(params.toString(), config.risk); const paths = analyticsPaths(filters)
+  const entryLedger = useRef(null)
+  const entryIdentity = `${view}:${paths.kpis}`
+  useEffect(() => { if (view !== 'summary') entryLedger.current = null }, [view])
   const kpis = useResource(paths.kpis); const analysis = useResource(paths.analysis)
   const [corrected, setCorrected] = useState(false)
   useEffect(() => { if (filters.corrected) { setCorrected(true); setParams(filters.canonical, { replace: true }) } }, [filters.canonical, filters.corrected, setParams])
@@ -117,7 +123,7 @@ export function AnalyticsPage({ view = 'summary' }) {
   const filterBlock = <><Filters filters={filters} entities={entities} setParams={setParams} /><p className="text-xs text-secondary">{filters.analysisMode === 'current' ? 'Vigente: último análisis completado. Los indicadores muestran los últimos seis meses completos disponibles.' : 'Histórico: selección de periodos naturales o ejecución completada.'}</p></>
   const analysisBlock = <ValidatedResource resource={analysis} adapt={adaptAnalysis} loading={<ChartLoadingState label="Cargando…" charts={1} />}>{(data) => <AnalysisContent data={data} mode={filters.analysisMode} principal={principal} selectRun={changeRun} />}</ValidatedResource>
   const loadingSlots = view === 'summary' ? resolveExecutiveKpis({ riskType: filters.risk_type, resourceState: 'LOADING' }).filter((slot) => slot.state !== 'NOT_APPLICABLE') : undefined
-  const kpiBlock = !can(principal, 'dashboard.read') ? <ErrorState error={new ApiError(403)} /> : <ValidatedResource resource={kpis} adapt={adaptKpis} loading={<ChartLoadingState label="Cargando…" charts={view === 'summary' || view === 'litigation' ? 2 : 1} showKpis={view !== 'trends'} kpiSlots={loadingSlots} />}>{(data) => <div className="space-y-8"><KpiVisuals data={data} view={view} riskType={filters.risk_type} />{view !== 'summary' && view !== 'trends' && <ObservationSections data={data} />}{view === 'trends' && <ObservationSections data={data} />}</div>}</ValidatedResource>
+  const kpiBlock = !can(principal, 'dashboard.read') ? <ErrorState error={new ApiError(403)} /> : <ValidatedResource resource={kpis} adapt={adaptKpis} loading={<ChartLoadingState label="Cargando…" charts={view === 'summary' || view === 'litigation' ? 2 : 1} showKpis={view !== 'trends'} kpiSlots={loadingSlots} />}>{(data) => <div className="space-y-8"><KpiVisuals data={data} view={view} riskType={filters.risk_type} entryIdentity={entryIdentity} entryLedger={entryLedger} />{view !== 'summary' && view !== 'trends' && <ObservationSections data={data} />}{view === 'trends' && <ObservationSections data={data} />}</div>}</ValidatedResource>
   return <div className="space-y-8"><PageHeader title={config.title} description={config.description} />{corrected && <p role="status" className="text-xs text-secondary">Se retiraron filtros no válidos de la dirección.</p>}{view === 'summary' ? <>{kpiBlock}{analysisBlock}{filterBlock}{can(principal, 'dashboard.read') && kpis.data && (() => { try { return <ObservationSections data={adaptKpis(kpis.data)} /> } catch { return null } })()}</> : view === 'trends' ? <>{analysisBlock}{filterBlock}{kpiBlock}</> : <>{filterBlock}{kpiBlock}{analysisBlock}</>}</div>
 }
 

@@ -51,6 +51,9 @@
   --kpi-delta-slot-height: 20px;
   --kpi-previous-slot-height: 16px;
   --kpi-card-height: 128px;
+  --kpi-entry-duration: 180ms;
+  --kpi-entry-stagger: 40ms;
+  --kpi-entry-offset: 6px;
   --motion-fast: 150ms;
   --motion-default: 200ms;
   --kpi-count-duration: 1000ms;
