@@ -1,5 +1,6 @@
 import { ApiError } from '../../api/errors.js'
 import { formatDate, formatDecimal, formatTimestamp, formatValue, validDate } from '../../shared/formatters.js'
+import { findingSeverity } from './viewModels.js'
 
 export const KPI_CATALOG = Object.freeze({
   'KPI-RC-03': { name: 'Contratos próximos a vencimiento sin revisión', unit: 'contratos', core: true },
@@ -74,7 +75,7 @@ export function adaptAnalysis(data) {
     const findings = run.findings.map((row) => {
       if (!object(row) || !id(row.id) || row.analytic_run_id !== run.analytic_run_id || !id(row.proactive_evaluation_id) || !core(row.kpi_code) || !object(row.dimensions) || !validDate(row.period_start) || !validDate(row.period_end) || !['current_value', 'reference_value', 'variation'].every((key) => decimal(row[key])) || typeof row.triggered_rule !== 'string' || !nullableString(row.recurrent_pattern) || typeof row.description !== 'string' || !timestamp(row.created_at) || typeof row.entity_filter_applicable !== 'boolean') fail()
       const reference = references.find((item) => item.finding_id === row.id)
-      return { ...row, name: KPI_CATALOG[row.kpi_code].name, unit: KPI_CATALOG[row.kpi_code].unit, dimensionsText: dimensionsLabel(row.dimensions), currentText: formatDecimal(row.current_value), referenceText: formatDecimal(row.reference_value), variationText: formatDecimal(row.variation), ruleText: ruleLabel(row.triggered_rule), contextReferenceId: reference?.id || null }
+      return { ...row, name: KPI_CATALOG[row.kpi_code].name, unit: KPI_CATALOG[row.kpi_code].unit, dimensionsText: dimensionsLabel(row.dimensions), severity: findingSeverity(row.dimensions), currentText: formatDecimal(row.current_value), referenceText: formatDecimal(row.reference_value), variationText: formatDecimal(row.variation), ruleText: ruleLabel(row.triggered_rule), contextReferenceId: reference?.id || null }
     })
     if (references.some((row) => !findings.some((finding) => finding.id === row.finding_id && finding.kpi_code === row.kpi_code))) fail()
     return { ...run, evaluations, findings, context_references: references }

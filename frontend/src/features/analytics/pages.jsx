@@ -12,7 +12,7 @@ import { formatDate, formatTimestamp, validDate } from '../../shared/formatters.
 import { writeQuery } from '../../shared/query.js'
 import { analyticsFilters, analyticsPaths, FILTER_VALIDATORS, PERIODS, RISKS } from './api.js'
 import { adaptAnalysis, adaptKpis, KPI_CATALOG, latestSeries, ruleLabel } from './adapters.js'
-import { AnalyticsChart, ChartContainer, EmptyChartState, ObservationTable, SeverityChart } from './charts.jsx'
+import { ChartLoadingState, ExposureEvolutionChart, LitigationExposureChart, ObservationTable, SeverityChart, TemporalChart } from './charts.jsx'
 
 const configs = {
   summary: { title: 'Resumen ejecutivo', risk: 'all', description: 'Indicadores, contexto y hallazgos persistidos del riesgo legal.' },
@@ -20,11 +20,14 @@ const configs = {
   litigation: { title: 'Gestión de litigios', risk: 'litigation', description: 'Exposición por severidad y nuevos litigios por periodo.' },
   trends: { title: 'Tendencias y riesgos', risk: 'all', description: 'Evaluaciones deterministas e histórico de hallazgos completados.' },
 }
-function ValidatedResource({ resource, adapt, children }) {
+
+function ValidatedResource({ resource, adapt, children, loading }) {
+  if (resource.state === 'loading') return loading || <ChartLoadingState />
   return <ResourceState resource={resource}>{(data) => {
     try { return children(adapt(data)) } catch { return <ErrorState error={new ApiError(503)} onRetry={resource.reload} /> }
   }}</ResourceState>
 }
+
 function Filters({ filters, entities, setParams }) {
   const [draft, setDraft] = useState({ ...filters.raw, period: filters.period, risk_type: filters.risk_type, mode: filters.analysisMode })
   const [error, setError] = useState(false)
@@ -51,22 +54,28 @@ function Filters({ filters, entities, setParams }) {
     {draft.analytic_run_id && draft.mode === 'historical' && <Button variant="ghost" onClick={() => setDraft((value) => ({ ...value, analytic_run_id: undefined }))}>Quitar selección de ejecución</Button>}
   </FilterBar>{error && <p role="alert" className="mt-2 text-xs text-[var(--critical)]">El rango personalizado requiere fechas válidas y ordenadas.</p>}</form>
 }
+
 function MetricGroup({ data }) {
   const codes = Object.keys(KPI_CATALOG).filter((code) => KPI_CATALOG[code].core)
   const present = codes.filter((code) => data.items.some((item) => item.kpi_code === code))
   return <section aria-label="Indicadores principales"><KpiRow>{present.map((code) => {
     const rows = latestSeries(data.items, code)
-    // Una dimensión no equivale a un total; mantener cada observación separada.
     if (rows.length === 1) return <KpiMetric key={code} label={rows[0].name} displayValue={rows[0].displayValue} shortContext={rows[0].unit} previousContext={rows[0].periodText} delta={<span className="text-muted">Cálculo: {formatTimestamp(rows[0].calculated_at)}</span>} />
-    return <div key={code} className="min-w-0"><h2 className="h-[var(--kpi-title-slot-height)] text-xs font-medium text-secondary">{KPI_CATALOG[code].name}</h2><ul className="space-y-3">{rows.map((row) => <li key={row.id}><p className="text-[11px] text-secondary">{row.dimensionsText}</p><p className="font-mono text-sm tabular-nums">{row.displayValue} {row.unit}</p><p className="text-[11px] text-muted">{row.periodText}</p><p className="text-[11px] text-muted">Cálculo: {formatTimestamp(row.calculated_at)}</p></li>)}</ul></div>
+    const lastPeriod = rows.reduce((latest, row) => row.period_start > latest ? row.period_start : latest, rows[0].period_start)
+    return <KpiMetric key={code} label={KPI_CATALOG[code].name} displayValue="Por dimensión" shortContext="" previousContext={`Periodo: ${lastPeriod.slice(0, 7)}`} delta={<span className="text-muted">Desglose en gráfica y tabla</span>} />
   })}</KpiRow>{!present.length && <EmptyState title="Sin indicadores principales" />}</section>
 }
+
 function FindingList({ run, principal }) {
-  if (!run.findings.length) return <EmptyState title="Sin hallazgos" message="Esta ejecución completada no produjo hallazgos bajo los filtros activos." />
-  return <div className="space-y-4">{run.findings.map((finding) => <article key={finding.id} className="space-y-3 rounded-panel border border-border bg-surface p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-semibold">{finding.name}</h3><p className="text-xs text-secondary">{finding.dimensionsText}</p></div>{finding.dimensions.Nivel_Severidad && <RiskBadge level={{ alto: 'Alto', medio: 'Medio', bajo: 'Bajo' }[finding.dimensions.Nivel_Severidad] || finding.dimensions.Nivel_Severidad} />}</div><dl className="grid grid-cols-1 gap-3 text-xs md:grid-cols-3"><div><dt className="text-secondary">Actual</dt><dd className="font-mono">{finding.currentText} {finding.unit}</dd></div><div><dt className="text-secondary">Referencia</dt><dd className="font-mono">{finding.referenceText} {finding.unit}</dd></div><div><dt className="text-secondary">Variación absoluta</dt><dd className="font-mono">{finding.variationText} {finding.unit}</dd></div></dl><p className="text-xs text-secondary">{formatDate(finding.period_start)} – {formatDate(finding.period_end)}</p><p className="text-xs">{finding.ruleText}</p><p className="text-[13px]">{finding.description}</p>{finding.recurrent_pattern && <p className="text-xs">Patrón recurrente: {finding.recurrent_pattern}</p>}<p className="text-[11px] text-muted">Generado: {formatTimestamp(finding.created_at)}</p>{finding.contextReferenceId && can(principal, 'document.query') && <Link className="inline-block text-xs underline" to={`/consulta?context_reference_id=${encodeURIComponent(finding.contextReferenceId)}`}>Verificar evidencia documental</Link>}</article>)}</div>
+  if (!run.findings.length) return <EmptyState title="Análisis completado sin hallazgos" message="La ejecución no produjo señales bajo las reglas y el histórico disponibles." />
+  return <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">{run.findings.map((finding) => {
+    const risk = finding.severity ? { alto: 'Alto', medio: 'Medio', bajo: 'Bajo' }[finding.severity] : null
+    return <article key={finding.id} className="space-y-3 rounded-panel border border-border bg-surface p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-semibold">{finding.name}</h3><p className="text-xs text-secondary">{finding.dimensionsText}</p></div>{risk && <RiskBadge level={risk} />}</div><dl className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-3"><div><dt className="text-secondary">Actual</dt><dd className="font-mono tabular-nums">{finding.currentText} {finding.unit}</dd></div><div><dt className="text-secondary">Referencia</dt><dd className="font-mono tabular-nums">{finding.referenceText} {finding.unit}</dd></div><div><dt className="text-secondary">Variación</dt><dd className="font-mono tabular-nums">{finding.variationText} {finding.unit}</dd></div></dl><p className="text-xs text-secondary">{formatDate(finding.period_start)} – {formatDate(finding.period_end)}</p><p className="text-xs font-medium">{finding.ruleText}</p><p className="text-[13px]">{finding.description}</p>{finding.recurrent_pattern && <p className="text-xs">Patrón recurrente: {finding.recurrent_pattern}</p>}<p className="text-[11px] text-muted">Generado: {formatTimestamp(finding.created_at)}</p>{finding.contextReferenceId && can(principal, 'document.query') && <Link className="inline-block text-xs underline" to={`/consulta?context_reference_id=${encodeURIComponent(finding.contextReferenceId)}`}>Verificar evidencia documental</Link>}</article>
+  })}</div>
 }
+
 function AnalysisContent({ data, mode, principal, selectRun }) {
-  return <section className="space-y-5" aria-label="Análisis persistido"><div className="flex flex-wrap items-center gap-3"><h2 className="text-base font-semibold">{mode === 'current' ? 'Análisis vigente' : 'Análisis histórico'}</h2><Badge>{data.alert_count} alertas</Badge></div>{!data.items.length && <EmptyState title="Sin análisis completados" message="No se sustituyen por ejecuciones iniciadas o fallidas." />}{data.items.map((run) => <section key={run.analytic_run_id} className="space-y-5"><div><h3 className="text-sm font-semibold">Ejecución completada</h3><p className="text-xs text-secondary">{formatTimestamp(run.completed_at)}</p><p className="text-xs text-secondary">Ventana: {formatTimestamp(run.window_start)} – {formatTimestamp(run.window_end)}</p><p className="mt-3 text-[13px]">{run.executive_summary}</p>{mode === 'historical' && <Button variant="ghost" onClick={() => selectRun(run.analytic_run_id)}>Seleccionar ejecución</Button>}</div><DataTable caption="Evaluaciones persistidas" rows={run.evaluations} columns={[
+  return <section className="space-y-5" aria-label="Análisis persistido"><div className="flex flex-wrap items-center gap-3"><h2 className="text-base font-semibold">{mode === 'current' ? 'Análisis vigente' : 'Análisis histórico'}</h2><Badge>{data.alert_count} alertas</Badge></div><p className="text-xs text-secondary">Las señales se producen únicamente por reglas deterministas sobre observaciones comparables; no son predicciones ni asesoría jurídica.</p>{!data.items.length && <EmptyState title="Sin análisis completados" message="No se sustituyen por ejecuciones iniciadas o fallidas." />}{data.items.map((run) => <section key={run.analytic_run_id} className="space-y-5"><div className="rounded-panel border border-border bg-surface p-5"><h3 className="text-sm font-semibold">Ejecución completada</h3><p className="text-xs text-secondary">{formatTimestamp(run.completed_at)}</p><p className="text-xs text-secondary">Ventana: {formatTimestamp(run.window_start)} – {formatTimestamp(run.window_end)}</p><p className="mt-3 text-[13px]">{run.executive_summary}</p>{mode === 'historical' && <Button className="mt-3" variant="ghost" onClick={() => selectRun(run.analytic_run_id)}>Seleccionar ejecución</Button>}</div><FindingList run={run} principal={principal} /><details className="rounded-panel border border-border bg-surface p-5"><summary className="cursor-pointer text-sm font-semibold">Ver evaluaciones persistidas</summary><div className="mt-4"><DataTable caption="Evaluaciones persistidas" rows={run.evaluations} columns={[
     { key: 'name', label: 'Indicador' }, { key: 'dimensionsText', label: 'Dimensiones' },
     { key: 'evaluation_period', label: 'Periodo', render: (row) => formatDate(row.evaluation_period) },
     { key: 'outcomeText', label: 'Resultado' }, { key: 'currentText', label: 'Actual', numeric: true },
@@ -75,8 +84,20 @@ function AnalysisContent({ data, mode, principal, selectRun }) {
     { key: 'signal_detected', label: 'Señal', render: (row) => row.signal_detected ? 'Sí' : 'No' },
     { key: 'recurrence_month_count', label: 'Meses recurrentes' }, { key: 'rules_applied', label: 'Reglas', render: (row) => row.rules_applied.map(ruleLabel).join(' · ') },
     { key: 'not_evaluated_reason', label: 'Motivo', render: (row) => row.not_evaluated_reason ? 'Histórico comparable insuficiente' : '—' },
-  ]} /><FindingList run={run} principal={principal} /></section>)}</section>
+  ]} /></div></details></section>)}</section>
 }
+
+function ObservationSections({ data }) {
+  return <><section className="space-y-3"><h2 className="text-base font-semibold">Observaciones recibidas</h2><ObservationTable items={data.items.filter((row) => KPI_CATALOG[row.kpi_code].core)} /></section><section className="space-y-3"><h2 className="text-base font-semibold">Contexto operativo</h2><p className="text-xs text-secondary">Estos indicadores no generan señales ejecutivas.</p><ObservationTable items={data.items.filter((row) => !KPI_CATALOG[row.kpi_code].core)} /></section></>
+}
+
+function KpiVisuals({ data, view }) {
+  if (view === 'summary') return <><MetricGroup data={data} /><div className="grid grid-cols-1 gap-8 xl:grid-cols-12"><div className="min-w-0 xl:col-span-8"><ExposureEvolutionChart items={data.items} /></div><div className="min-w-0 xl:col-span-4"><SeverityChart items={data.items} /></div></div></>
+  if (view === 'contracts') return <><MetricGroup data={data} /><TemporalChart items={data.items} kpiCode="KPI-RC-01" title="Tiempo de ciclo del contrato" subtitle="Promedio mensual en días; no se imputan periodos ni valores." unit="días" emptyMessage="No existen observaciones contractuales para los filtros seleccionados." /></>
+  if (view === 'litigation') return <><MetricGroup data={data} /><div className="space-y-8"><LitigationExposureChart items={data.items} /><TemporalChart items={data.items} kpiCode="KPI-LI-05" title="Nuevos litigios por periodo" subtitle="Conteo por mes natural recibido; los meses sin observación no se fabrican." unit="litigios" emptyMessage="Aún no existen observaciones para los filtros seleccionados." /></div></>
+  return null
+}
+
 export function AnalyticsPage({ view = 'summary' }) {
   const config = configs[view]
   const [params, setParams] = useSearchParams(); const { principal } = useSession()
@@ -87,15 +108,12 @@ export function AnalyticsPage({ view = 'summary' }) {
   let entities = []
   try { if (kpis.data) entities = [...new Set(adaptKpis(kpis.data).items.filter((row) => row.entity_filter_applicable && typeof row.dimensions.entity === 'string').map((row) => row.dimensions.entity))].sort() } catch { /* El estado de lectura informa el contrato inválido sin exponer el payload. */ }
   const changeRun = (id) => setParams(writeQuery({ ...filters.raw, analytic_run_id: id }, FILTER_VALIDATORS))
-  return <div className="space-y-8"><PageHeader title={config.title} description={config.description} />{corrected && <p role="status" className="text-xs text-secondary">Se retiraron filtros no válidos de la dirección.</p>}<Filters filters={filters} entities={entities} setParams={setParams} /><p className="text-xs text-secondary">{filters.analysisMode === 'current' ? 'Vigente: último análisis completado. Los indicadores muestran los últimos seis meses completos disponibles.' : 'Histórico: selección de periodos naturales o ejecución completada.'}</p><ValidatedResource resource={kpis} adapt={adaptKpis}>{(data) => <div className="space-y-8"><MetricGroup data={data} />{view === 'summary' && <div className="grid grid-cols-1 gap-6 lg:grid-cols-12"><div className="min-w-0 lg:col-span-8"><AnalyticsChart items={data.items} kpiCode="KPI-LI-01" kind="bar" title="Evolución de exposición acumulada" subtitle="Unidad: importe. Solo periodos recibidos; no se imputan meses ni valores." emptyTitle="Sin datos disponibles" emptyMessage="Aún no existen observaciones para los filtros seleccionados." /></div><div className="min-w-0 lg:col-span-4"><SeverityChart items={data.items} title="Composición por severidad" subtitle="Distribución según clasificación de severidad recibida." emptyTitle="Sin datos disponibles" emptyMessage="Sin observaciones de severidad para los filtros activos." /></div></div>}{view === 'contracts' && <AnalyticsChart items={data.items} kpiCode="KPI-RC-01" kind="line" title="Tiempo de ciclo del contrato" subtitle="Unidad: días. Solo periodos recibidos; no se imputan meses ni valores." emptyTitle="Sin datos disponibles" emptyMessage="No existen observaciones contractuales para los filtros seleccionados." />}{view === 'litigation' && <div className="space-y-6"><AnalyticsChart items={data.items} kpiCode="KPI-LI-01" kind="line" title="Exposición total por litigios activos" subtitle="Unidad: importe. Solo periodos recibidos; no se imputan meses ni valores." emptyTitle="Sin datos disponibles" emptyMessage="Aún no existen observaciones para los filtros seleccionados." /><AnalyticsChart items={data.items} kpiCode="KPI-LI-05" kind="bar" title="Nuevos litigios por periodo" subtitle="Unidad: litigios. Solo periodos recibidos; no se imputan meses ni valores." emptyTitle="Sin datos disponibles" emptyMessage="Aún no existen observaciones para los filtros seleccionados." /></div>}{view === 'trends' && (() => {
-    const eligibleCodes = Object.keys(KPI_CATALOG).filter((code) => KPI_CATALOG[code].core && code !== 'KPI-RC-03')
-    const presentCodes = eligibleCodes.filter((code) => data.items.some((item) => item.kpi_code === code))
-    if (!presentCodes.length) {
-      return <ChartContainer title="Tendencias de indicadores clave" subtitle="Evolución temporal de indicadores núcleo evaluados."><EmptyChartState chartTitle="Tendencias de indicadores clave" title="Sin tendencias disponibles" message="Aún no existen suficientes observaciones para mostrar una evolución temporal." /></ChartContainer>
-    }
-    return <div className="space-y-6">{presentCodes.map((code) => <AnalyticsChart key={code} items={data.items} kpiCode={code} kind="line" />)}</div>
-  })()}<section className="space-y-3"><h2 className="text-base font-semibold">Observaciones recibidas</h2><ObservationTable items={data.items.filter((row) => KPI_CATALOG[row.kpi_code].core)} /></section><section className="space-y-3"><h2 className="text-base font-semibold">Contexto operativo</h2><p className="text-xs text-secondary">Estos indicadores no generan señales ejecutivas.</p><ObservationTable items={data.items.filter((row) => !KPI_CATALOG[row.kpi_code].core)} /></section></div>}</ValidatedResource><ValidatedResource resource={analysis} adapt={adaptAnalysis}>{(data) => <AnalysisContent data={data} mode={filters.analysisMode} principal={principal} selectRun={changeRun} />}</ValidatedResource></div>
+  const filterBlock = <><Filters filters={filters} entities={entities} setParams={setParams} /><p className="text-xs text-secondary">{filters.analysisMode === 'current' ? 'Vigente: último análisis completado. Los indicadores muestran los últimos seis meses completos disponibles.' : 'Histórico: selección de periodos naturales o ejecución completada.'}</p></>
+  const analysisBlock = <ValidatedResource resource={analysis} adapt={adaptAnalysis} loading={<ChartLoadingState label="Cargando…" charts={1} />}>{(data) => <AnalysisContent data={data} mode={filters.analysisMode} principal={principal} selectRun={changeRun} />}</ValidatedResource>
+  const kpiBlock = <ValidatedResource resource={kpis} adapt={adaptKpis} loading={<ChartLoadingState label="Cargando…" charts={view === 'summary' || view === 'litigation' ? 2 : 1} showKpis={view !== 'trends'} />}>{(data) => <div className="space-y-8"><KpiVisuals data={data} view={view} />{view !== 'summary' && view !== 'trends' && <ObservationSections data={data} />}{view === 'trends' && <ObservationSections data={data} />}</div>}</ValidatedResource>
+  return <div className="space-y-8"><PageHeader title={config.title} description={config.description} />{corrected && <p role="status" className="text-xs text-secondary">Se retiraron filtros no válidos de la dirección.</p>}{view === 'summary' ? <>{kpiBlock}{analysisBlock}{filterBlock}{kpis.data && (() => { try { return <ObservationSections data={adaptKpis(kpis.data)} /> } catch { return null } })()}</> : view === 'trends' ? <>{analysisBlock}{filterBlock}{kpiBlock}</> : <>{filterBlock}{kpiBlock}{analysisBlock}</>}</div>
 }
+
 export const SummaryPage = () => <AnalyticsPage view="summary" />
 export const ContractsPage = () => <AnalyticsPage view="contracts" />
 export const LitigationPage = () => <AnalyticsPage view="litigation" />

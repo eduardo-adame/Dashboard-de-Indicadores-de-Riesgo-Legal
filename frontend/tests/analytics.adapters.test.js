@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { adaptAnalysis, adaptKpis, chartSeries, KPI_CATALOG, latestSeries } from '../src/features/analytics/adapters.js'
+import { exposureEvolutionViewModel, litigationExposureViewModel, severityCompositionViewModel } from '../src/features/analytics/viewModels.js'
 
 const runId = '11111111-1111-4111-8111-111111111111'
 function observation(code = 'KPI-RC-03', overrides = {}) {
@@ -65,6 +66,37 @@ describe('SRS_REQUIRED: adapters analíticos', () => {
     const dto = analysis(); dto.alert_count = 8
     expect(adaptAnalysis(dto).alert_count).toBe(8)
     expect(adaptAnalysis(dto).items[0].executive_summary).toBe('Análisis completado sin hallazgos.')
+  })
+})
+describe('SRS_REQUIRED: View Models de presentación analítica', () => {
+  it('agrupa severidades del mismo periodo en una única barra apilada', () => {
+    const items = adaptKpis(page(['alto', 'medio', 'bajo'].map((nivel_severidad, index) => observation('KPI-LI-01', { dimensions: { nivel_severidad }, value: String([200000, 90000, 25000][index]) })))).items
+    const model = exposureEvolutionViewModel(items)
+    expect(model.rows).toHaveLength(1)
+    expect(model.rows[0]).toMatchObject({ month: '2030-01', alto: 200000, medio: 90000, bajo: 25000 })
+    expect(model.series.map((series) => series.key)).toEqual(['alto', 'medio', 'bajo'])
+  })
+  it('compone el donut solo con el último periodo y conserva el total decimal exacto', () => {
+    const items = adaptKpis(page([
+      observation('KPI-LI-01', { dimensions: { nivel_severidad: 'alto' }, value: '10', period_start: '2029-12-01', period_end: '2029-12-31' }),
+      observation('KPI-LI-01', { dimensions: { nivel_severidad: 'alto' }, value: '200000' }),
+      observation('KPI-LI-01', { dimensions: { nivel_severidad: 'medio' }, value: '90000' }),
+      observation('KPI-LI-01', { dimensions: { nivel_severidad: 'bajo' }, value: '25000' }),
+    ])).items
+    const model = severityCompositionViewModel(items)
+    expect(model.period).toBe('2030-01-01')
+    expect(model.totalText).toBe('$315,000 MXN')
+    expect(model.rows.map((row) => row.percentageText)).toEqual(['63.49 %', '28.57 %', '7.94 %'])
+  })
+  it('solo deriva total litigioso cuando la partición del periodo está completa', () => {
+    const incomplete = adaptKpis(page([observation('KPI-LI-01', { dimensions: { nivel_severidad: 'alto' }, value: '10' })])).items
+    expect(litigationExposureViewModel(incomplete)).toMatchObject({ hasTotal: false, hasHigh: true })
+    const complete = adaptKpis(page(['alto', 'medio', 'bajo'].map((nivel_severidad) => observation('KPI-LI-01', { dimensions: { nivel_severidad }, value: '0.1' })))).items
+    expect(litigationExposureViewModel(complete).rows[0]).toMatchObject({ totalText: '$0.3 MXN' })
+  })
+  it('omite coordenadas que no preservan exactamente el decimal fuente', () => {
+    const items = adaptKpis(page([observation('KPI-LI-01', { dimensions: { nivel_severidad: 'alto' }, value: '0.1234567890123456789' })])).items
+    expect(exposureEvolutionViewModel(items).rows).toHaveLength(0)
   })
 })
 describe('ROBUSTNESS: DTO inválido', () => {

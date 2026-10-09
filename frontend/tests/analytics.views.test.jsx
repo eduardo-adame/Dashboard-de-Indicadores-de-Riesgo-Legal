@@ -6,7 +6,7 @@ import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { SessionProvider } from '../src/auth/SessionProvider.jsx'
 import { ApiError } from '../src/api/errors.js'
 import { AnalyticsPage } from '../src/features/analytics/pages.jsx'
-import { AnalyticsChart, SeverityChart } from '../src/features/analytics/charts.jsx'
+import { SeverityChart, TemporalChart } from '../src/features/analytics/charts.jsx'
 import { adaptKpis, KPI_CATALOG } from '../src/features/analytics/adapters.js'
 import { buildRegistry } from '../src/routing/registry.jsx'
 import * as analytics from '../src/features/analytics/routes.jsx'
@@ -45,23 +45,24 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
     expect(await screen.findByText('Análisis completado sin hallazgos.')).toBeVisible()
     expect(client.acquireRead.mock.calls.every(([path]) => /^\/dashboard\/(kpis|analysis)\?/.test(path))).toBe(true)
   })
-  it('muestra KPI/contextos y diferencia cero de no disponible sin inventar moneda', async () => {
+  it('muestra KPI/contextos, diferencia cero de no disponible y limita moneda a exposición', async () => {
     fixture({ kpis: kpiPage(Object.keys(KPI_CATALOG).map((code) => observation(code, code === 'KPI-RC-01' ? { availability: 'NO_DISPONIBLE', value: null } : code === 'KPI-LI-01' ? { dimensions: { nivel_severidad: 'alto' }, value: '17.50' } : {}))) })
     expect(await screen.findByRole('heading', { name: 'Contexto operativo' })).toBeVisible()
     expect(screen.getAllByText('No disponible').length).toBeGreaterThan(0)
     expect(screen.getAllByText('0').length).toBeGreaterThan(0)
-    expect(screen.queryByText(/MXN|\$/)).not.toBeInTheDocument()
+    expect(screen.getAllByText(/MXN|\$/).length).toBeGreaterThan(0)
     expect(screen.getAllByText('No aplicable').length).toBeGreaterThan(0)
     expect(document.body.textContent).not.toContain('KPI-RC-03')
   })
-  it('muestra fecha de cálculo en cada dimensión sin alterar su decimal', async () => {
+  it('mantiene geometría KPI estable y conserva el decimal dimensional en las tablas', async () => {
     fixture({ kpis: kpiPage([
       observation('KPI-LI-01', { dimensions: { nivel_severidad: 'alto' }, value: '12.5000', calculated_at: '2030-02-01T01:02:03Z' }),
       observation('KPI-LI-01', { dimensions: { nivel_severidad: 'medio' }, value: '0.000000000000000001', calculated_at: '2030-02-02T04:05:06Z' }),
     ]) })
     expect((await screen.findAllByText('12.5000')).length).toBeGreaterThan(0)
     expect(screen.getAllByText('0.000000000000000001').length).toBeGreaterThan(0)
-    expect(screen.getAllByText(/Cálculo:.*UTC/)).toHaveLength(2)
+    expect(screen.getByText('Por dimensión')).toBeVisible()
+    expect(screen.getByText('Desglose en gráfica y tabla')).toBeVisible()
   })
   it('muestra backend alert_count y contexto RF048 sin seleccionar documentos', async () => {
     fixture({ analysis: analysisPage(true) })
@@ -70,6 +71,12 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
     expect(link).toHaveAttribute('href', `/consulta?context_reference_id=${contextId}`)
     expect(screen.getByText('Resumen sintético persistido.')).toBeVisible()
     expect(screen.getByText('Patrón recurrente: 3/4')).toBeVisible()
+  })
+  it('normaliza nivel_severidad canónico del hallazgo y muestra su badge', async () => {
+    const payload = analysisPage(true)
+    payload.items[0].findings[0].dimensions = { nivel_severidad: 'alto' }
+    fixture({ view: 'trends', analysis: payload })
+    expect(await screen.findByText('Alto')).toBeVisible()
   })
   it('no presenta link de contexto sin document.query', async () => {
     fixture({ analysis: analysisPage(true), roles: [] })
@@ -120,8 +127,8 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
     if (error === 403) expect(alerts[0]).toHaveTextContent('Sin autorización')
   })
   it('incluye alternativa tabular y rompe líneas donde faltan meses sin inventarlos', () => {
-    const items = adaptKpis(kpiPage([observation('KPI-LI-01', { value: '3' }), observation('KPI-LI-01', { value: '8', period_start: '2030-03-01', period_end: '2030-03-31' })])).items
-    render(<AnalyticsChart items={items} kpiCode="KPI-LI-01" kind="line" />)
+    const items = adaptKpis(kpiPage([observation('KPI-LI-05', { value: '3' }), observation('KPI-LI-05', { value: '8', period_start: '2030-03-01', period_end: '2030-03-31' })])).items
+    render(<TemporalChart items={items} kpiCode="KPI-LI-05" title="Serie temporal" subtitle="Prueba" unit="litigios" />)
     expect(screen.getByRole('table')).toBeInTheDocument()
     const points = JSON.parse(screen.getByTestId('chart').getAttribute('data-points'))
     expect(points.map((row) => row.month)).toEqual(['2030-01', '2030-03']); expect(screen.getAllByTestId('plot')).toHaveLength(2)
@@ -146,24 +153,24 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
   it('compone severidades desde la dimensión canónica del DTO y no muestra estado vacío', () => {
     const items = adaptKpis(kpiPage([
       observation('KPI-LI-01', { dimensions: { nivel_severidad: 'alto' }, value: '200000' }),
-      observation('KPI-LI-01', { dimensions: { nivel_severidad: 'medio' }, value: '90000', period_start: '2030-02-01', period_end: '2030-02-28' }),
-      observation('KPI-LI-01', { dimensions: { nivel_severidad: 'bajo' }, value: '25000', period_start: '2030-03-01', period_end: '2030-03-31' }),
+      observation('KPI-LI-01', { dimensions: { nivel_severidad: 'medio' }, value: '90000' }),
+      observation('KPI-LI-01', { dimensions: { nivel_severidad: 'bajo' }, value: '25000' }),
       observation('KPI-CN-03', { dimensions: { area: 'Finanzas', nivel_severidad: 'medio' }, value: '1' }),
     ])).items
 
     render(<SeverityChart items={items} />)
 
     expect(screen.queryByLabelText('Composición por severidad: sin datos disponibles')).not.toBeInTheDocument()
-    expect(screen.getByText('Alto:')).toBeVisible()
-    expect(screen.getByText('Medio:')).toBeVisible()
-    expect(screen.getByText('Bajo:')).toBeVisible()
-    expect(screen.getByText('200000')).toBeVisible()
-    expect(screen.getByText('90000')).toBeVisible()
-    expect(screen.getByText('25000')).toBeVisible()
-    expect(JSON.parse(screen.getByTestId('plot').dataset.points)).toEqual([
-      { name: 'Alto', value: 200000, color: 'var(--critical)' },
-      { name: 'Medio', value: 90000, color: 'var(--warning)' },
-      { name: 'Bajo', value: 25000, color: 'var(--success)' },
+    expect(screen.getAllByText('Alto').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Medio').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Bajo').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/\$200,000 MXN/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/63\.49 %/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText('$315,000 MXN').length).toBeGreaterThan(0)
+    expect(JSON.parse(screen.getByTestId('plot').dataset.points).map(({ name, value }) => ({ name, value }))).toEqual([
+      { name: 'Alto', value: 200000 },
+      { name: 'Medio', value: 90000 },
+      { name: 'Bajo', value: 25000 },
     ])
   })
   it('contratos con dataset vacío preserva ChartContainer para tiempo de ciclo y muestra EmptyChartState contextual', async () => {
@@ -175,25 +182,23 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
   })
   it('litigios con ambos datasets vacíos preserva ambas superficies de gráficas independientemente', async () => {
     fixture({ view: 'litigation', kpis: kpiPage([]) })
-    expect(await screen.findByText('Exposición total por litigios activos')).toBeVisible()
+    expect(await screen.findByText('Evolución de exposición litigiosa')).toBeVisible()
     expect(screen.getByText('Nuevos litigios por periodo')).toBeVisible()
-    expect(screen.getByLabelText('Exposición total por litigios activos: sin datos disponibles')).toBeInTheDocument()
+    expect(screen.getByLabelText('Evolución de exposición litigiosa: sin datos disponibles')).toBeInTheDocument()
     expect(screen.getByLabelText('Nuevos litigios por periodo: sin datos disponibles')).toBeInTheDocument()
     expect(screen.queryAllByTestId('chart')).toHaveLength(0)
   })
   it('litigios con estado mixto: una gráfica poblada y otra vacía conviven sin anularse', async () => {
-    fixture({ view: 'litigation', kpis: kpiPage([observation('KPI-LI-01', { value: '15.00' })]) })
-    expect((await screen.findAllByText('Exposición total por litigios activos')).length).toBeGreaterThanOrEqual(1)
+    fixture({ view: 'litigation', kpis: kpiPage([observation('KPI-LI-01', { dimensions: { nivel_severidad: 'alto' }, value: '15.00' })]) })
+    expect((await screen.findAllByText('Evolución de exposición litigiosa')).length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('Nuevos litigios por periodo')).toBeVisible()
     expect(screen.getAllByTestId('chart')).toHaveLength(1)
     expect(screen.getByLabelText('Nuevos litigios por periodo: sin datos disponibles')).toBeInTheDocument()
   })
-  it('tendencias con dataset vacío preserva región de tendencias con EmptyChartState contextual', async () => {
+  it('tendencias sin hallazgos prioriza el resumen de ejecución y no crea una galería KPI', async () => {
     fixture({ view: 'trends', kpis: kpiPage([]) })
-    expect(await screen.findByText('Tendencias de indicadores clave')).toBeVisible()
-    expect(screen.getByText('Sin tendencias disponibles')).toBeVisible()
-    expect(screen.getByText('Aún no existen suficientes observaciones para mostrar una evolución temporal.')).toBeVisible()
-    expect(screen.getByLabelText('Tendencias de indicadores clave: sin tendencias disponibles')).toBeInTheDocument()
+    expect((await screen.findAllByText(/Análisis completado sin hallazgos/)).length).toBeGreaterThan(0)
+    expect(screen.getByText(/reglas deterministas/)).toBeVisible()
     expect(screen.queryAllByTestId('chart')).toHaveLength(0)
   })
 })
