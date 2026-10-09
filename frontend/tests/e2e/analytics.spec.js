@@ -119,7 +119,7 @@ test.describe('Analítica — Gestión de litigios', () => {
   test('preserva ambas superficies de gráficas independientemente cuando están vacías', async ({ page }) => {
     mockAnalytics(page, [])
     await page.goto('/litigios')
-    await expect(page.locator('figcaption').getByText(/exposición total por litigios activos/i)).toBeVisible({ timeout: 8000 })
+    await expect(page.locator('figcaption').getByText(/evolución de exposición litigiosa/i)).toBeVisible({ timeout: 8000 })
     await expect(page.locator('figcaption').getByText(/nuevos litigios por periodo/i)).toBeVisible({ timeout: 8000 })
   })
 })
@@ -133,11 +133,12 @@ test.describe('Analítica — Tendencias y riesgos', () => {
     await expect(page.getByRole('heading', { name: /tendencias y riesgos/i })).toBeVisible()
   })
 
-  test('preserva región de tendencias con estado vacío contextual cuando no hay observaciones', async ({ page }) => {
+  test('prioriza análisis sin hallazgos y no crea una galería KPI vacía', async ({ page }) => {
     mockAnalytics(page, [])
     await page.goto('/tendencias')
-    await expect(page.getByText(/tendencias de indicadores clave/i)).toBeVisible({ timeout: 8000 })
-    await expect(page.getByText(/sin tendencias disponibles/i)).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText(/sin análisis completados/i)).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText(/reglas deterministas/i)).toBeVisible()
+    await expect(page.locator('figure')).toHaveCount(0)
   })
 })
 

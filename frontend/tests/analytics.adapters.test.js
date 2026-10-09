@@ -106,3 +106,63 @@ describe('ROBUSTNESS: DTO inválido', () => {
   it('rechaza observaciones duplicadas en una identidad mensual', () => { expect(() => adaptKpis(page([observation(), observation()]))).toThrow() })
   it('no admite contexto-only en evaluaciones', () => { expect(() => adaptAnalysis(analysis({ evaluations: [evaluation({ kpi_code: 'KPI-EO-01' })] }))).toThrow() })
 })
+
+describe('SRS_REQUIRED: certificación LI-01 y periodo de composición', () => {
+  const exposure = (severity, value, month = '2026-10', overrides = {}) => observation('KPI-LI-01', {
+    dimensions: { nivel_severidad: severity }, value,
+    period_start: `${month}-01`, period_end: `${month}-${month === '2026-09' ? '30' : '31'}`,
+    ...overrides,
+  })
+  const adapted = (items) => adaptKpis(page(items)).items
+
+  it('la partición completa del mismo periodo presenta 315000 sin alterar observaciones', () => {
+    const items = adapted([exposure('alto', '200000'), exposure('medio', '90000'), exposure('bajo', '25000')])
+    const before = structuredClone(items)
+    const model = litigationExposureViewModel(items)
+    expect(model.hasTotal).toBe(true)
+    expect(model.rows[0]).toMatchObject({ total: 315000, totalText: '$315,000 MXN' })
+    expect(items).toEqual(before)
+    expect(items).toHaveLength(3)
+  })
+  it('la partición incompleta omite total y no sustituye bajo ausente por cero', () => {
+    const model = litigationExposureViewModel(adapted([exposure('alto', '200000'), exposure('medio', '90000')]))
+    expect(model.hasTotal).toBe(false)
+    expect(model.rows).toHaveLength(1)
+    expect(model.rows[0].total).toBeUndefined()
+    expect(model.rows[0].bajo).toBeUndefined()
+    expect(model.rows[0].totalText).toBe('No disponible')
+  })
+  it('alto/bajo de octubre y medio de septiembre nunca forman un total', () => {
+    const model = litigationExposureViewModel(adapted([
+      exposure('alto', '200000'), exposure('medio', '90000', '2026-09'), exposure('bajo', '25000'),
+    ]))
+    expect(model.hasTotal).toBe(false)
+    expect(model.rows.every((row) => row.total === undefined)).toBe(true)
+  })
+  it('una observación no disponible mantiene incompleta la partición', () => {
+    const model = litigationExposureViewModel(adapted([
+      exposure('alto', '200000'), exposure('medio', '90000'),
+      exposure('bajo', null, '2026-10', { availability: 'NO_DISPONIBLE' }),
+    ]))
+    expect(model.hasTotal).toBe(false)
+    expect(model.rows[0].total).toBeUndefined()
+  })
+  it.each([
+    [['2026-10', '2026-08', '2026-09'], '2026-10'],
+    [['2026-07', '2026-10', '2026-05', '2026-09'], '2026-10'],
+    [['2026-06'], '2026-06'],
+  ])('selecciona cronológicamente %s sin depender de la posición', (months, expected) => {
+    const items = adapted(months.flatMap((month) => ['alto', 'medio', 'bajo'].map((severity) => exposure(severity, month === expected ? '100' : '10', month, {
+      period_end: `${month}-${['2026-06', '2026-09'].includes(month) ? '30' : '31'}`,
+    }))))
+    const before = structuredClone(items)
+    const model = severityCompositionViewModel(items)
+    expect(model.period).toBe(`${expected}-01`)
+    expect(model.total).toBe(300)
+    expect(model.rows.map((row) => row.value)).toEqual([100, 100, 100])
+    expect(items).toEqual(before)
+  })
+  it('sin observaciones no selecciona ni inventa periodo de composición', () => {
+    expect(severityCompositionViewModel([])).toEqual({ period: null, total: null, rows: [] })
+  })
+})

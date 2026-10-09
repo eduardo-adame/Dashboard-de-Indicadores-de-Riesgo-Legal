@@ -6,7 +6,7 @@ import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { SessionProvider } from '../src/auth/SessionProvider.jsx'
 import { ApiError } from '../src/api/errors.js'
 import { AnalyticsPage } from '../src/features/analytics/pages.jsx'
-import { SeverityChart, TemporalChart } from '../src/features/analytics/charts.jsx'
+import { LitigationExposureChart, SeverityChart, TemporalChart } from '../src/features/analytics/charts.jsx'
 import { adaptKpis, KPI_CATALOG } from '../src/features/analytics/adapters.js'
 import { buildRegistry } from '../src/routing/registry.jsx'
 import * as analytics from '../src/features/analytics/routes.jsx'
@@ -74,9 +74,18 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
   })
   it('normaliza nivel_severidad canónico del hallazgo y muestra su badge', async () => {
     const payload = analysisPage(true)
-    payload.items[0].findings[0].dimensions = { nivel_severidad: 'alto' }
+    const run = payload.items[0]
+    run.evaluations[0].kpi_code = 'KPI-LI-01'
+    run.evaluations[0].canonical_dimensions_key = { nivel_severidad: 'alto' }
+    run.findings[0].kpi_code = 'KPI-LI-01'
+    run.findings[0].dimensions = { nivel_severidad: 'alto' }
+    run.context_references[0].kpi_code = 'KPI-LI-01'
+    run.context_references[0].dimensions = { nivel_severidad: 'alto' }
     fixture({ view: 'trends', analysis: payload })
     expect(await screen.findByText('Alto')).toBeVisible()
+    expect(screen.getByRole('article')).toHaveTextContent('Descripción sintética sustentada.')
+    expect(screen.getByRole('article')).toHaveTextContent('nivel severidad: alto')
+    expect(screen.queryAllByTestId('chart')).toHaveLength(0)
   })
   it('no presenta link de contexto sin document.query', async () => {
     fixture({ analysis: analysisPage(true), roles: [] })
@@ -199,6 +208,44 @@ describe('SRS_REQUIRED: cuatro vistas analíticas', () => {
     fixture({ view: 'trends', kpis: kpiPage([]) })
     expect((await screen.findAllByText(/Análisis completado sin hallazgos/)).length).toBeGreaterThan(0)
     expect(screen.getByText(/reglas deterministas/)).toBeVisible()
+    expect(screen.queryAllByTestId('chart')).toHaveLength(0)
+  })
+})
+
+describe('SRS_REQUIRED: certificación visual de partición y hallazgos', () => {
+  const exposureItems = (levels) => adaptKpis(kpiPage(levels.map((nivel_severidad) => observation('KPI-LI-01', {
+    dimensions: { nivel_severidad }, value: { alto: '200000', medio: '90000', bajo: '25000' }[nivel_severidad],
+  })))).items
+
+  it('la partición completa muestra la leyenda y el total visual de 315000', () => {
+    render(<LitigationExposureChart items={exposureItems(['alto', 'medio', 'bajo'])} />)
+    expect(screen.getByLabelText('Leyenda')).toHaveTextContent('Total')
+    expect(screen.getByRole('table')).toHaveTextContent('$315,000 MXN')
+    expect(JSON.parse(screen.getByTestId('chart').dataset.points)[0].total).toBe(315000)
+  })
+  it('la partición incompleta no muestra Total ni 290000 en leyenda, gráfica o tabla', () => {
+    render(<LitigationExposureChart items={exposureItems(['alto', 'medio'])} />)
+    expect(screen.getByLabelText('Leyenda')).not.toHaveTextContent('Total')
+    expect(screen.queryByRole('columnheader', { name: 'Total', exact: true })).not.toBeInTheDocument()
+    expect(screen.queryByText('$290,000 MXN')).not.toBeInTheDocument()
+    expect(JSON.parse(screen.getByTestId('chart').dataset.points)[0].total).toBeUndefined()
+  })
+  it('el donut vacío conserva EmptyChartState sin periodo inventado', () => {
+    render(<SeverityChart items={[]} />)
+    expect(screen.getByLabelText('Composición por severidad: sin datos disponibles')).toBeVisible()
+    expect(screen.queryAllByTestId('chart')).toHaveLength(0)
+    expect(screen.queryByText(/Periodo:/)).not.toBeInTheDocument()
+  })
+  it('el hallazgo real-shaped sin severidad presenta tarjeta sin RiskBadge ni sparkline', async () => {
+    fixture({ view: 'trends', analysis: analysisPage(true), kpis: kpiPage([]) })
+    const card = await screen.findByRole('article')
+    expect(card).toHaveTextContent('Contratos próximos a vencimiento sin revisión')
+    expect(card).toHaveTextContent('Actual')
+    expect(card).toHaveTextContent('Referencia')
+    expect(card).toHaveTextContent('Variación')
+    expect(card).toHaveTextContent('Patrón recurrente: 3/4')
+    expect(card).toHaveTextContent('Generado:')
+    expect(card.querySelector('.badge')).toBeNull()
     expect(screen.queryAllByTestId('chart')).toHaveLength(0)
   })
 })
