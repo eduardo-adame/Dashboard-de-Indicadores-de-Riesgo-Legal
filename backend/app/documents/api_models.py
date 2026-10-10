@@ -8,6 +8,9 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+OcrState = Literal["Pendiente", "Exitoso", "Rechazado por baja confianza"]
+
+
 class OcrQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
     document_id: str | None = Field(default=None, min_length=1, max_length=256)
@@ -34,13 +37,15 @@ class OcrItem(BaseModel):
     document_name: str
     file_name: str | None
     processing_state: str
-    ocr_state: str
+    ocr_state: OcrState | None
+    ocr_applicable: bool
+    reprocess_eligible: bool
     processed_at: datetime | None
     confidence: float | None
     total_page_count: int | None
     ocr_processed_page_count: int | None
     granularity: str | None
-    outcome: str
+    outcome: OcrState | None
 
 
 class OcrPage(BaseModel):

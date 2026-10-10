@@ -286,7 +286,7 @@ class DocumentsRepository:
             clauses.append("d.id_documento = %s")
             values.append(query.document_id)
         if query.state is not None:
-            clauses.append("COALESCE(o.estado_ocr, 'Pendiente') = %s")
+            clauses.append("o.estado_ocr = %s")
             values.append(query.state)
         for field, operator, value in (
             ("processed_at", ">=", query.processed_from),
@@ -303,10 +303,20 @@ class DocumentsRepository:
         return connection.execute(
             """SELECT d.id_documento AS document_id, v.id AS document_version_id,
                       d.name AS document_name, f.declared_name AS file_name,
-                      v.processing_state, COALESCE(o.estado_ocr, 'Pendiente') AS ocr_state,
+                      v.processing_state, o.estado_ocr AS ocr_state,
                       o.processed_at, o.confianza_agregada AS confidence,
                       o.total_page_count, o.ocr_processed_page_count, o.granularity,
-                      v.created_at
+                      v.created_at, d.invalidated_at, f.state AS file_state,
+                      f.technical_result,
+                      EXISTS (SELECT 1 FROM app.quarantine_item q
+                              WHERE q.ingest_file_id = f.id AND q.state = 'Pendiente')
+                          AS quarantined,
+                      EXISTS (SELECT 1 FROM app.document_candidate_page p
+                              WHERE p.ingest_file_id = f.id AND p.requires_ocr)
+                          AS requires_ocr,
+                      (c.ingest_file_id IS NOT NULL
+                          AND (v.source_record_id IS NULL OR r.ingest_file_id = f.id))
+                          AS source_verified
                  FROM app.document d
                  JOIN app.document_version v ON v.id_documento = d.id_documento
                  LEFT JOIN LATERAL (
@@ -315,6 +325,8 @@ class DocumentsRepository:
                  ) o ON TRUE
                  LEFT JOIN app.ingest_file f ON f.id::text = d.id_documento
                      AND f.stored_object_id = v.stored_object_id
+                 LEFT JOIN app.document_candidate c ON c.ingest_file_id = f.id
+                 LEFT JOIN app.source_record r ON r.id = v.source_record_id
                 WHERE """ + where + " ORDER BY v.created_at DESC, v.id DESC LIMIT %s",
             values,
         ).fetchall()
@@ -325,7 +337,8 @@ class DocumentsRepository:
         rows = connection.execute(
             """SELECT v.id, v.id_documento, v.stored_object_id, v.processing_state,
                       v.source_record_id, d.invalidated_at, f.id AS ingest_file_id,
-                      f.state AS file_state, f.technical_result, o.estado_ocr,
+                      f.state AS file_state, f.technical_result, o.estado_ocr AS ocr_state,
+                      TRUE AS source_verified,
                       EXISTS (SELECT 1 FROM app.quarantine_item q
                               WHERE q.ingest_file_id = f.id AND q.state = 'Pendiente')
                           AS quarantined,

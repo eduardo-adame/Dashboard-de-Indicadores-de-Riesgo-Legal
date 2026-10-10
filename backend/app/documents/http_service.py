@@ -66,6 +66,20 @@ def _decode_cursor(query):
         raise ValueError("Cursor no válido") from None
 
 
+def _reprocess_eligible(source):
+    """La consulta y la acción comparten las precondiciones de procedencia OCR."""
+    return bool(source is not None and (
+        source["source_verified"]
+        and source["invalidated_at"] is None
+        and source["file_state"] == "COMPLETADO"
+        and source["technical_result"] == "ACCEPTED"
+        and not source["quarantined"]
+        and source["requires_ocr"]
+        and source["processing_state"] != "FALLIDA"
+        and source["ocr_state"] in (None, "Pendiente", "Rechazado por baja confianza")
+    ))
+
+
 class DocumentHttpService:
     def __init__(self, repository, security, *, runner=None, kpi_integration=None):
         self.repository = repository
@@ -93,8 +107,10 @@ class DocumentHttpService:
                                                            after=_decode_cursor(query))
                 page_rows = rows[:query.limit]
                 items = [OcrItem(**{**{key: row[key] for key in OcrItem.model_fields
-                                      if key != "outcome"},
-                                    "outcome": row["ocr_state"]}) for row in page_rows]
+                                      if key not in {"outcome", "ocr_applicable", "reprocess_eligible"}},
+                                    "outcome": row["ocr_state"],
+                                    "ocr_applicable": row["requires_ocr"],
+                                    "reprocess_eligible": _reprocess_eligible(row)}) for row in page_rows]
                 self._authorize(connection, current)
                 return OcrPage(items=items, next_cursor=(
                     _cursor(page_rows[-1], query) if len(rows) > query.limit else None))
@@ -122,14 +138,7 @@ class DocumentHttpService:
                         current = self._authorize(connection, principal)
                         source = self.repository.ocr_reprocess_source(
                             connection, document_id, payload.source_document_version_id)
-                        if source is None or (
-                            source["invalidated_at"] is not None
-                            or source["file_state"] != "COMPLETADO"
-                            or source["technical_result"] != "ACCEPTED"
-                            or source["quarantined"] or not source["requires_ocr"]
-                            or source["processing_state"] == "FALLIDA"
-                            or source["estado_ocr"] not in (None, "Pendiente", "Rechazado por baja confianza")
-                        ):
+                        if not _reprocess_eligible(source):
                             raise DocumentHttpConflict("Fuente no elegible para reproceso")
                         existing = self.repository.ocr_operation_result(connection, operation_id)
                         if existing is not None:

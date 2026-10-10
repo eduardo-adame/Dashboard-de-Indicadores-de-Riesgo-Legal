@@ -85,24 +85,30 @@ def database(monkeypatch):
             "client": TestClient(application), "integration": integration, "encoder": encoder, "state": state}
 
 
-def _seed(database, *, ocr_state=None, processing_state="PENDIENTE"):
+def _seed(database, *, ocr_state=None, processing_state="PENDIENTE", requires_ocr=True, exchange_format="PDF"):
     file_id, stored_id, source_version = uuid4(), uuid4(), uuid4()
+    file_name = f"synthetic.{exchange_format.lower()}"
+    mime_type = "application/pdf" if exchange_format == "PDF" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     with psycopg.connect(database["owner"]) as connection:
         connection.execute("""INSERT INTO app.stored_object(id,storage_kind,locator,sha256,mime_type,byte_size,original_name)
-            VALUES (%s,'FILESYSTEM',%s,%s,'application/pdf',10,'synthetic.pdf')""", (stored_id, f"test/{stored_id}/synthetic.pdf", bytes(32)))
+            VALUES (%s,'FILESYSTEM',%s,%s,%s,10,%s)""", (stored_id, f"test/{stored_id}/{file_name}", bytes(32), mime_type, file_name))
         connection.execute("""INSERT INTO app.ingest_file(id,stored_object_id,source_family,exchange_format,state,operation_id,correlation_id,
             declared_extension,detected_format,format_classification,technical_result,declared_name,source_locator,source_revision,actor_identifier,content_sha256)
-            VALUES (%s,%s,'CONTRATOS_DOCUMENTOS','PDF','COMPLETADO',%s,%s,'.pdf','PDF','SUPPORTED','ACCEPTED','synthetic.pdf',%s,1,'test',%s)""",
-            (file_id, stored_id, uuid4(), uuid4(), f"test/{file_id}", bytes(32)))
-        connection.execute("INSERT INTO app.document(id_documento,name,document_type,source_family) VALUES (%s,'synthetic.pdf','PDF','CONTRATOS_DOCUMENTOS')", (str(file_id),))
+            VALUES (%s,%s,'CONTRATOS_DOCUMENTOS',%s,'COMPLETADO',%s,%s,%s,%s,'SUPPORTED','ACCEPTED',%s,%s,1,'test',%s)""",
+            (file_id, stored_id, exchange_format, uuid4(), uuid4(), f".{exchange_format.lower()}", exchange_format,
+             f"synthetic.{exchange_format.lower()}", f"test/{file_id}", bytes(32)))
+        connection.execute("INSERT INTO app.document(id_documento,name,document_type,source_family) VALUES (%s,%s,%s,'CONTRATOS_DOCUMENTOS')", (str(file_id), file_name, exchange_format))
         connection.execute("""INSERT INTO app.document_version(id,id_documento,version_number,stored_object_id,processing_state,content_sha256,operation_id,correlation_id,completed_at)
             VALUES (%s,%s,1,%s,%s,%s,%s,%s,%s)""", (source_version, str(file_id), stored_id, processing_state, bytes(32), uuid4(), uuid4(),
             datetime.now(UTC) if processing_state in {"LISTA", "RECHAZADA", "FALLIDA"} else None))
-        connection.execute("INSERT INTO app.document_candidate(ingest_file_id,processing_state,native_text) VALUES (%s,'PENDING_OCR','')", (file_id,))
-        connection.execute("INSERT INTO app.document_candidate_page(id,ingest_file_id,page_number,native_text,requires_ocr) VALUES (%s,%s,1,'',TRUE)", (uuid4(), file_id))
+        connection.execute("INSERT INTO app.document_candidate(ingest_file_id,processing_state,native_text) VALUES (%s,%s,'')",
+                           (file_id, "PENDING_OCR" if requires_ocr else "NATIVE_TEXT"))
+        connection.execute("INSERT INTO app.document_candidate_page(id,ingest_file_id,page_number,native_text,requires_ocr) VALUES (%s,%s,1,'',%s)",
+                           (uuid4(), file_id, requires_ocr))
         if ocr_state is not None:
             DocumentsRepository.insert_ocr_run(connection, document_version_id=source_version, attempt_number=1,
-                estado_ocr=ocr_state, confianza_agregada=0.5, total_page_count=1, processed_page_count=1,
+                estado_ocr=ocr_state, confianza_agregada=(None if ocr_state == "Pendiente" else 0.95 if ocr_state == "Exitoso" else 0.5),
+                total_page_count=1, processed_page_count=1,
                 granularity="WORD", operation_id=uuid4(), correlation_id=uuid4())
     return str(file_id), source_version
 
@@ -123,15 +129,17 @@ def _counts(database, document_id):
 
 def test_ocr_list_preserves_nulls_and_filters_operational_metadata(database):
     document, source = _seed(database)
-    response = database["client"].get("/api/documents/ocr", params={"document_id": document, "state": "Pendiente"})
+    response = database["client"].get("/api/documents/ocr", params={"document_id": document})
     assert response.status_code == 200
     item = response.json()["items"][0]
     assert item["document_version_id"] == str(source)
     assert item["file_name"] == "synthetic.pdf"
-    assert item["ocr_state"] == "Pendiente"
+    assert item["ocr_state"] is item["outcome"] is None
+    assert item["ocr_applicable"] is item["reprocess_eligible"] is True
     assert all(item[key] is None for key in ("processed_at", "confidence", "total_page_count", "ocr_processed_page_count", "granularity"))
     assert not {"consolidated_text", "stored_object_id", "locator", "native_text"}.intersection(item)
-    for extra in ({"state": "Rechazado por baja confianza"}, {"processed_from": "2030-01-01T00:00:00Z"}):
+    for extra in ({"state": "Pendiente"}, {"state": "Rechazado por baja confianza"},
+                  {"processed_from": "2030-01-01T00:00:00Z"}):
         assert database["client"].get("/api/documents/ocr", params={"document_id": document, **extra}).json()["items"] == []
 
 
@@ -141,8 +149,58 @@ def test_ocr_list_returns_low_confidence_result_and_date_filter(database):
     assert response.status_code == 200
     item = response.json()["items"][0]
     assert item["confidence"] == 0.5 and item["processed_at"] is not None
+    assert item["ocr_applicable"] is item["reprocess_eligible"] is True
     assert item["total_page_count"] == item["ocr_processed_page_count"] == 1
     assert database["client"].get("/api/documents/ocr", params={"document_id": document, "processed_to": "2000-01-01T00:00:00Z"}).json()["items"] == []
+
+
+@pytest.mark.parametrize("exchange_format", ["PDF", "DOCX"])
+def test_native_ocr_listing_preserves_null_and_reprocess_returns_conflict(database, exchange_format):
+    document, source = _seed(database, requires_ocr=False, exchange_format=exchange_format, processing_state="LISTA")
+    response = database["client"].get("/api/documents/ocr", params={"document_id": document})
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["ocr_state"] is item["outcome"] is None
+    assert item["ocr_applicable"] is item["reprocess_eligible"] is False
+    assert item["file_name"] == f"synthetic.{exchange_format.lower()}"
+    assert database["client"].get("/api/documents/ocr", params={"document_id": document, "state": "Pendiente"}).json()["items"] == []
+    result, _ = _request(database, document, source)
+    assert result.status_code == 409
+    assert database["state"]["runner_calls"] == database["state"]["ocr_calls"] == 0
+    assert _counts(database, document) == (1, 0, 0, None)
+
+
+@pytest.mark.parametrize("ocr_state,processing,eligible", [
+    ("Pendiente", "PENDIENTE", True), ("Exitoso", "LISTA", False),
+    ("Rechazado por baja confianza", "RECHAZADA", True),
+])
+def test_persisted_ocr_status_is_preserved_with_authoritative_eligibility(database, ocr_state, processing, eligible):
+    document, source = _seed(database, ocr_state=ocr_state, processing_state=processing)
+    item = database["client"].get("/api/documents/ocr", params={"document_id": document}).json()["items"][0]
+    assert item["ocr_state"] == item["outcome"] == ocr_state
+    assert item["ocr_applicable"] is True
+    assert item["reprocess_eligible"] is eligible
+    if not eligible:
+        result, _ = _request(database, document, source)
+        assert result.status_code == 409
+        assert database["state"]["runner_calls"] == database["state"]["ocr_calls"] == 0
+
+
+def test_latest_ocr_result_controls_eligibility_without_rewriting_history(database):
+    document, source = _seed(database)
+    with psycopg.connect(database["owner"]) as connection:
+        connection.execute("""INSERT INTO app.ocr_run
+            (id,document_version_id,attempt_number,estado_ocr,is_final,operation_id,correlation_id,processed_at)
+            VALUES (%s,%s,1,'Pendiente',FALSE,%s,%s,%s)""",
+            (uuid4(), source, uuid4(), uuid4(), datetime.now(UTC) - timedelta(seconds=1)))
+        DocumentsRepository.insert_ocr_run(connection, document_version_id=source, attempt_number=2,
+            estado_ocr="Exitoso", confianza_agregada=0.95, total_page_count=1, processed_page_count=1,
+            granularity="WORD", operation_id=uuid4(), correlation_id=uuid4())
+    item = database["client"].get("/api/documents/ocr", params={"document_id": document}).json()["items"][0]
+    assert item["ocr_state"] == "Exitoso" and item["reprocess_eligible"] is False
+    assert database["client"].get("/api/documents/ocr", params={"document_id": document, "state": "Pendiente"}).json()["items"] == []
+    with psycopg.connect(database["owner"]) as connection:
+        assert connection.execute("SELECT count(*) FROM app.ocr_run WHERE document_version_id=%s", (source,)).fetchone()[0] == 2
 
 
 def test_ocr_pagination_retains_version_identity_without_duplicates(database):
@@ -216,7 +274,7 @@ def test_low_confidence_reprocess_remains_unactivated_and_retry_does_not_repeat_
     assert _counts(database, document) == (2, 0, 0, None)
 
 
-@pytest.mark.parametrize("ineligible", ["quarantine", "rejected_file", "wrong_object", "missing_candidate", "wrong_document"])
+@pytest.mark.parametrize("ineligible", ["quarantine", "rejected_file", "wrong_object", "missing_candidate", "wrong_document", "invalidated", "failed_version"])
 def test_ineligible_source_is_rejected_without_pipeline_or_new_version(database, ineligible):
     document, source = _seed(database)
     with psycopg.connect(database["owner"]) as connection:
@@ -233,6 +291,13 @@ def test_ineligible_source_is_rejected_without_pipeline_or_new_version(database,
         elif ineligible == "missing_candidate":
             connection.execute("DELETE FROM app.document_candidate_page WHERE ingest_file_id=%s", (document,))
             connection.execute("DELETE FROM app.document_candidate WHERE ingest_file_id=%s", (document,))
+        elif ineligible == "invalidated":
+            connection.execute("UPDATE app.document SET invalidated_at=CURRENT_TIMESTAMP WHERE id_documento=%s", (document,))
+        elif ineligible == "failed_version":
+            connection.execute("UPDATE app.document_version SET processing_state='FALLIDA',completed_at=CURRENT_TIMESTAMP WHERE id=%s", (source,))
+    if ineligible != "wrong_document":
+        item = database["client"].get("/api/documents/ocr", params={"document_id": document}).json()["items"][0]
+        assert item["reprocess_eligible"] is False
     target = "not-visible" if ineligible == "wrong_document" else document
     response, _ = _request(database, target, source)
     assert response.status_code == 409

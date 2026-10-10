@@ -33,7 +33,8 @@ def test_ocr_collection_preserves_operational_nulls_without_protected_text(clien
     identity = uuid4()
     service.list_ocr = lambda *args: {"items": [{"document_id": "synthetic", "document_version_id": identity,
         "document_name": "synthetic.pdf", "file_name": None, "processing_state": "PENDIENTE",
-        "ocr_state": "Pendiente", "processed_at": None, "confidence": None,
+        "ocr_state": "Pendiente", "ocr_applicable": True, "reprocess_eligible": True,
+        "processed_at": None, "confidence": None,
         "total_page_count": None, "ocr_processed_page_count": None, "granularity": None,
         "outcome": "Pendiente"}], "next_cursor": None}
     response = http.get("/api/documents/ocr")
