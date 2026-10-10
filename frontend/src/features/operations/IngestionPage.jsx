@@ -23,6 +23,7 @@ export function IngestionPage() {
 function IngestionWorkspace({ principal }) {
   const [file, setFile] = useState(null); const [location, setLocation] = useState(locations[0].value)
   const [rows, setRows] = useState([]); const [inputKey, setInputKey] = useState(0)
+  const [ocrRefreshKey, setOcrRefreshKey] = useState(0); const [technicalRefreshKey, setTechnicalRefreshKey] = useState(0)
   const mutation = useOperation()
   const blocked = mutation.busy || Boolean(mutation.error && ![403, 409, 422].includes(mutation.error.status))
   async function dispatch(rowsToDispatch) {
@@ -33,6 +34,10 @@ function IngestionWorkspace({ principal }) {
       if (!data) break
       outcomes.push({ fileId: row.file_id, dispatch: data })
       setRows((current) => current.map((item) => item.file_id === row.file_id ? { ...item, dispatch: data } : item))
+      // Sólo la confirmación documental durable invalida las lecturas técnicas.
+      if (data.downstream_target === 'DOCUMENT' && data.state === 'COMPLETED') {
+        setOcrRefreshKey((value) => value + 1); setTechnicalRefreshKey((value) => value + 1)
+      }
     }
     return outcomes
   }
@@ -66,7 +71,7 @@ function IngestionWorkspace({ principal }) {
       { key: 'file_id', label: 'Archivo recibido' }, { key: 'reception', label: 'Recepción' }, { key: 'family', label: 'Familia' },
       { key: 'dispatch', label: 'Procesamiento downstream', render: (row) => row.dispatch ? <Badge>{row.dispatch.state}</Badge> : <span>{row.state === 'COMPLETADO' && row.routing_target !== 'NONE' ? 'Sin confirmación de despacho' : 'No despachado'}</span> },
     ]} /><p className="text-xs text-muted">Esta vista no representa un historial persistente.</p></section>
-    {can(principal, 'document.manage') && <OcrPanel />}
-    {principal.roles.includes('TI') && <TechnicalMetric />}
+    {can(principal, 'document.manage') && <OcrPanel refreshKey={ocrRefreshKey} onProcessingCompleted={() => setTechnicalRefreshKey((value) => value + 1)} />}
+    {principal.roles.includes('TI') && <TechnicalMetric key={technicalRefreshKey} />}
   </>
 }

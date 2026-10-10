@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useSession } from '../../auth/SessionProvider.jsx'
 import { can } from '../../auth/permissions.js'
@@ -10,20 +10,30 @@ import { ResourceState, ErrorState } from '../../components/feedback.jsx'
 import { ocrPage, readFilters, changeFilters, filterQuery } from './adapters.js'
 import { newOperationId, queryPath, useOperation, useOperationsRead } from './api.js'
 
-export function OcrPanel() {
+export function OcrPanel({ refreshKey = 0, onProcessingCompleted } = {}) {
   const session = useSession()
   if (!can(session.principal, 'document.manage')) return <ErrorState error={new ApiError(403)} />
-  return <OcrWorkspace key={session.generation} />
+  return <OcrWorkspace key={session.generation} refreshKey={refreshKey} onProcessingCompleted={onProcessingCompleted} />
 }
-function OcrWorkspace() {
+function OcrWorkspace({ refreshKey, onProcessingCompleted }) {
   const [params, setParams] = useSearchParams(); const filters = readFilters(params.toString(), 'ocr')
   const [selected, setSelected] = useState(null); const [requestId, setRequestId] = useState(null); const [notice, setNotice] = useState(null); const [filterError, setFilterError] = useState(null)
   const resource = useOperationsRead(queryPath('ocr', filters), ocrPage); const mutation = useOperation()
+  const previousRefreshKey = useRef(refreshKey); const reload = useRef(resource.reload); reload.current = resource.reload
+  useEffect(() => {
+    if (previousRefreshKey.current === refreshKey) return
+    previousRefreshKey.current = refreshKey
+    // Refrescar datos no desmonta una confirmación OCR ni modifica la consulta.
+    reload.current()
+  }, [refreshKey])
   function change(patch) { try { setParams(filterQuery(changeFilters(filters, patch), 'ocr')); setFilterError(null); setSelected(null) } catch (e) { setFilterError(e) } }
   async function reprocess() {
     if (!selected?.reprocess_eligible || mutation.busy || mutation.result || mutation.error) return
     const result = await mutation.execute('document.manage', (api) => api.reprocess(selected, requestId))
-    if (result) { setNotice(`${result.message}${result.pending ? ' Trabajo posterior pendiente.' : ''}`); resource.reload() }
+    if (result) {
+      setNotice(`${result.message}${result.pending ? ' Trabajo posterior pendiente.' : ''}`); resource.reload()
+      if (!result.pending && ['LISTA', 'RECHAZADA', 'FALLIDA'].includes(result.processing_state)) onProcessingCompleted?.()
+    }
   }
   return <section className="space-y-4"><h2 className="text-base font-semibold">Gestión OCR</h2>
     <FilterBar><Input label="Documento conocido" compact defaultValue={filters.document_id || ''} key={`document-${filters.document_id || ''}`} onBlur={(e) => change({ document_id: e.target.value })} /><Select label="Estado OCR" value={filters.state || ''} options={[{ value: '', label: 'Todos' }, { value: 'Pendiente', label: 'Pendiente' }, { value: 'Rechazado por baja confianza', label: 'Rechazado por baja confianza' }]} onChange={(e) => change({ state: e.target.value })} /><Input label="Procesado desde (fecha con zona)" compact defaultValue={filters.processed_from || ''} onBlur={(e) => change({ processed_from: e.target.value })} /><Input label="Procesado hasta (fecha con zona)" compact defaultValue={filters.processed_to || ''} onBlur={(e) => change({ processed_to: e.target.value })} /><Button variant="secondary" onClick={() => { resource.reload(); mutation.clear(); setSelected(null) }}>Consultar estado OCR</Button></FilterBar>
