@@ -36,9 +36,9 @@ function QuarantineWorkspace({ principal }) {
       <Select label="Estado" value={filters.state || ''} onChange={(e) => change({ state: e.target.value })} options={[{ value: '', label: 'Todos' }, ...quarantineStates.map((v) => ({ value: v, label: v }))]} />
       <Select label="Familia" value={filters.source_family || ''} onChange={(e) => change({ source_family: e.target.value })} options={[{ value: '', label: 'Todas' }, ...families.map((v) => ({ value: v, label: v }))]} />
       <Select label="Regla infringida" value={filters.cause_code || ''} onChange={(e) => change({ cause_code: e.target.value })} options={[{ value: '', label: 'Todas' }, ...quarantineCauses.map((v) => ({ value: v, label: v.replaceAll('_', ' ') }))]} />
-      <Input label="Archivo de origen (UUID)" compact defaultValue={filters.ingest_file_id || ''} onBlur={(e) => change({ ingest_file_id: e.target.value })} />
-      <Input label="Rechazo desde (fecha con zona)" compact defaultValue={filters.rejected_from || ''} placeholder="2030-01-01T00:00:00Z" onBlur={(e) => change({ rejected_from: e.target.value })} />
-      <Input label="Rechazo hasta (fecha con zona)" compact defaultValue={filters.rejected_to || ''} placeholder="2030-02-01T00:00:00Z" onBlur={(e) => change({ rejected_to: e.target.value })} />
+      <Input key={`file-${filters.ingest_file_id || ''}`} label="Archivo de origen (UUID)" compact defaultValue={filters.ingest_file_id || ''} onBlur={(e) => change({ ingest_file_id: e.target.value })} />
+      <Input key={`from-${filters.rejected_from || ''}`} label="Rechazo desde (fecha con zona)" compact defaultValue={filters.rejected_from || ''} placeholder="2030-01-01T00:00:00Z" onBlur={(e) => change({ rejected_from: e.target.value })} />
+      <Input key={`to-${filters.rejected_to || ''}`} label="Rechazo hasta (fecha con zona)" compact defaultValue={filters.rejected_to || ''} placeholder="2030-02-01T00:00:00Z" onBlur={(e) => change({ rejected_to: e.target.value })} />
       <Button variant="secondary" onClick={resource.reload}>Actualizar estado</Button>
     </FilterBar>
     {filterError && <ErrorState error={filterError} />}
