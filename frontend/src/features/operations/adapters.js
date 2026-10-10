@@ -15,7 +15,16 @@ export const locations = [
   { value: 'internal-audit', label: 'Auditoría interna' },
 ]
 export const quarantineStates = ['Pendiente', 'Reinyectado', 'Descartado']
-export const quarantineCauses = ['MISSING_REQUIRED_FIELD', 'INVALID_TYPE', 'INVALID_DATE', 'OUT_OF_CATALOG', 'NEGATIVE_AMOUNT', 'DATE_ORDER_VIOLATION', 'STRUCTURAL_INCONSISTENCY', 'IDENTITY_CONFLICT', 'TECHNICAL_READ_FAILURE', 'OTHER_CAUSE']
+export const quarantineCauses = [
+  'MISSING_REQUIRED_FIELD', 'INVALID_TYPE', 'INVALID_DATE', 'OUT_OF_CATALOG',
+  'NEGATIVE_AMOUNT', 'DATE_ORDER_VIOLATION', 'STRUCTURAL_INCONSISTENCY',
+  'IDENTITY_CONFLICT', 'TECHNICAL_READ_FAILURE', 'OTHER_CAUSE',
+  'FORMAT_MISMATCH', 'ARCHIVE_LIMIT_EXCEEDED', 'ARCHIVE_COMPRESSION_RATIO_EXCEEDED',
+  'CORRUPT_ARCHIVE', 'BINARY_CONTENT', 'UNSUPPORTED_ENCODING',
+  'UNDETERMINABLE_STRUCTURE', 'AMBIGUOUS_DELIMITER', 'PROTECTED_PDF',
+  'CORRUPT_PDF', 'UNSUPPORTED_FORMAT', 'TABULAR_LIMIT_EXCEEDED',
+  'PROTECTED_DOCUMENT', 'EMPTY_DOCUMENT', 'TECHNICAL_FAILURE',
+]
 const timestamp = (value) => text(value) && formatTimestamp(value) !== '—'
 const short = (max) => (value) => text(value) && value.length > 0 && value.length <= max
 const limit = (value) => /^(?:[1-9]\d?|1\d\d|200)$/.test(value)
