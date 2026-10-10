@@ -266,7 +266,11 @@ def canonical_requests_for_projection(connection, results: Iterable[ProjectionRe
                 raise KpiIntegrationError("referencia temporal analítica inexistente")
             if isinstance(reference, datetime):
                 reference = _as_utc_date(reference)
-            key = (_month_start(reference), _month_end(reference), reference)
+            period_start, period_end = _month_start(reference), _month_end(reference)
+            # El mes pertenece a la fecha de negocio, pero el corte representa
+            # la incorporación durable; una reinyección tardía no es un cálculo viejo.
+            as_of_date = max(period_start, min(snapshot_reference, period_end))
+            key = (period_start, period_end, as_of_date)
             grouped.setdefault(key, set()).add(code)
     return tuple(
         KpiRecalculationRequest(tuple(sorted(codes)), start, end, as_of)
