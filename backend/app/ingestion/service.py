@@ -35,6 +35,7 @@ from app.ingestion.models import (
 from app.ingestion.repository import IngestionRepository
 from app.security.models import AuthenticatedPrincipal, SecurityError
 from app.security.service import SecurityService
+from app.validation.structural import validate_structure_for_family
 
 
 class IngestionService:
@@ -143,9 +144,20 @@ class IngestionService:
                 else:
                     document = extract_document(staged.path, detection.exchange_format)
                     routing_target = RoutingTarget.DOCUMENT
-                state = "COMPLETADO"
-                technical_result = "ACCEPTED"
-                cause = None
+                # Sin filas, el procesamiento posterior no valida: usar la regla estructural de dominio.
+                empty_structure_invalid = records is not None and not records.rows and any(
+                    not validate_structure_for_family(headers, (), family).conforming
+                    for _sheet, headers in (records.sheet_headers or ((None, records.headers),))
+                )
+                if empty_structure_invalid:
+                    state = "RECHAZADO"
+                    technical_result = "REJECTED"
+                    cause = "STRUCTURAL_INCONSISTENCY"
+                    routing_target = RoutingTarget.NONE
+                else:
+                    state = "COMPLETADO"
+                    technical_result = "ACCEPTED"
+                    cause = None
             except RejectedFileError as exc:
                 state = "CUARENTENA"
                 technical_result = "FAILED"
