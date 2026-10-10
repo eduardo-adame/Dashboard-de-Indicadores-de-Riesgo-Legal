@@ -1,6 +1,6 @@
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { SessionProvider } from '../src/auth/SessionProvider.jsx'
@@ -8,12 +8,13 @@ import { ApiError } from '../src/api/errors.js'
 import { IngestionPage } from '../src/features/operations/IngestionPage.jsx'
 import { QuarantinePage } from '../src/features/operations/QuarantinePage.jsx'
 import { AuditPage } from '../src/features/operations/AuditPage.jsx'
+import { OcrPanel } from '../src/features/operations/OcrPanel.jsx'
 
 const accountId = '11111111-1111-4111-8111-111111111111'
 const otherId = '22222222-2222-4222-8222-222222222222'
 const ingestion = { file_id: accountId, operation_id: otherId, correlation_id: accountId, state: 'COMPLETADO', format: 'CSV', family: 'CUMPLIMIENTO', routing_target: 'VALIDATION', safe_cause_code: null, idempotent: false }
 const quarantine = { items: [{ id: otherId, ingest_file_id: accountId, source_record_id: null, row_number: 2, source_family: 'CUMPLIMIENTO', created_at: '2030-01-01T00:00:00Z', cause_code: 'MISSING_REQUIRED_FIELD', cause_description: 'Falta campo obligatorio', state: 'Pendiente', original_payload: { Dato: null }, candidate_payload: { Dato: 'nuevo' }, discard_justification: null }], next_cursor: null }
-const ocr = { items: [{ document_id: 'DOC-1', document_version_id: otherId, document_name: 'Documento', file_name: null, processing_state: 'PROCESANDO', ocr_state: 'Pendiente', processed_at: null, confidence: null, total_page_count: null, ocr_processed_page_count: null, granularity: null, outcome: 'Pendiente' }], next_cursor: null }
+const ocr = { items: [{ document_id: 'DOC-1', document_version_id: otherId, document_name: 'Documento', file_name: null, processing_state: 'PROCESANDO', ocr_applicable: true, reprocess_eligible: true, ocr_state: 'Pendiente', processed_at: null, confidence: null, total_page_count: null, ocr_processed_page_count: null, granularity: null, outcome: 'Pendiente' }], next_cursor: null }
 const audit = { items: [{ id: otherId, occurred_at: '2030-01-01T00:00:00Z', actor_type: 'USER', actor_identifier: 'cuenta-sintetica', actor_user_id: accountId, action: 'INGEST', resource_type: 'FILE', resource_identifier: 'archivo', result: 'SUCCESS', safe_cause_code: null, operation_id: otherId, correlation_id: accountId, query_sha256: null, resources: [] }], next_cursor: null }
 
 function mount(element, { roles = ['ANALISTA'], request, reads } = {}) {
@@ -98,9 +99,57 @@ describe('SRS_REQUIRED: vistas operativas', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Revisa los datos')
     expect(client.acquireRead).toHaveBeenCalledTimes(before)
   })
+
+  it.each(['TI', 'ANALISTA'])('OCR autorizado para %s separa estados y ofrece únicamente acciones elegibles', async (role) => {
+    const cases = [
+      ['DOCX-NATIVO', false, null, false, 'LISTA', null, 'No aplica'],
+      ['PDF-TEXTO', false, null, false, 'LISTA', null, 'No aplica'],
+      ['ESCANEADO-SIN-OCR', true, null, false, 'PROCESANDO', null, 'Sin resultado OCR'],
+      ['ESCANEADO-PENDIENTE', true, 'Pendiente', false, 'PROCESANDO', null, 'Pendiente'],
+      ['ESCANEADO-RECHAZADO', true, 'Rechazado por baja confianza', true, 'RECHAZADA', 0, 'Rechazado por baja confianza'],
+      ['ESCANEADO-EXITOSO', true, 'Exitoso', false, 'LISTA', 0.96, 'Exitoso'],
+      ['ESCANEADO-FALLIDO', true, null, false, 'FALLIDA', null, 'Sin resultado OCR'],
+    ]
+    const items = cases.map(([document_id, ocr_applicable, ocr_state, reprocess_eligible, processing_state, confidence]) => ({ ...ocr.items[0], document_id, ocr_applicable, ocr_state, outcome: ocr_state, reprocess_eligible, processing_state, confidence }))
+    mount(<OcrPanel />, { roles: [role], reads: () => ({ items, next_cursor: null }) })
+    await screen.findByText('DOCX-NATIVO')
+    for (const [id, , , eligible, processing, confidence, label] of cases) {
+      const row = within(screen.getByText(id).closest('tr'))
+      expect(row.getAllByText(label)).toHaveLength(2)
+      expect(row.getByText(processing)).toBeVisible()
+      expect(row.getByText(confidence === null ? 'No disponible' : String(confidence))).toBeVisible()
+      expect(Boolean(row.queryByRole('button', { name: 'Reprocesar' }))).toBe(eligible)
+    }
+    expect(screen.getAllByRole('button', { name: 'Reprocesar' })).toHaveLength(1)
+  })
+
+  it('OCR deniega Jurídico sin consultar datos ni ofrecer reproceso', () => {
+    const { client } = mount(<OcrPanel />, { roles: ['JURIDICO'] })
+    expect(screen.getByRole('alert')).toHaveTextContent('Acceso no autorizado')
+    expect(client.acquireRead).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Reprocesar' })).not.toBeInTheDocument()
+  })
+
+  it('un rechazo vigente del servidor no confirma el reproceso ni repite el POST', async () => {
+    const request = vi.fn(async () => { throw new ApiError(409) })
+    mount(<OcrPanel />, { request })
+    await userEvent.click(await screen.findByRole('button', { name: 'Reprocesar' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Confirmar reproceso' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('conflicto')
+    expect(screen.queryByText(/Reproceso confirmado/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Confirmar reproceso' })).toBeDisabled()
+    expect(request).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('ROBUSTNESS: contratos de estado', () => {
+  it('OCR sin los booleanos obligatorios falla cerrado sin tabla parcial ni acciones', async () => {
+    const { ocr_applicable, ...malformed } = ocr.items[0]
+    mount(<OcrPanel />, { reads: () => ({ items: [ocr.items[0], malformed], next_cursor: null }) })
+    expect(await screen.findByRole('alert')).toHaveTextContent('servicio no está disponible')
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reprocesar' })).not.toBeInTheDocument()
+  })
   it('un DTO ilegible no presenta datos parciales', async () => {
     mount(<AuditPage />, { reads: () => ({ items: [{ dato: 'inválido' }], next_cursor: null }) })
     expect(await screen.findByRole('alert')).toHaveTextContent('servicio no está disponible')

@@ -5,7 +5,7 @@
  * ADR-008 vigente: document.manage para OCR (Analista/TI; Jurídico denegado).
  */
 import { test, expect } from '@playwright/test'
-import { mockSessionTI, mockDashboardEmpty } from './helpers.js'
+import { mockSessionTI, mockDashboardEmpty, mockSessionJuridico, ME_RESPONSE_TI } from './helpers.js'
 
 const UPLOAD_RESULT = {
   file_id: '11111111-1111-4111-8111-111111111111',
@@ -46,14 +46,16 @@ const OCR_PAGE = {
       document_version_id: '11111111-1111-4111-8111-111111111111',
       document_name: 'Contrato de prueba OCR',
       file_name: 'ocr-prueba.pdf',
-      processing_state: 'COMPLETED',
-      ocr_state: 'Pendiente',
+      processing_state: 'RECHAZADA',
+      ocr_applicable: true,
+      reprocess_eligible: true,
+      ocr_state: 'Rechazado por baja confianza',
       processed_at: '2026-10-07T00:00:00Z',
-      confidence: 0.91,
+      confidence: 0.61,
       total_page_count: 5,
       ocr_processed_page_count: 5,
       granularity: 'PAGE',
-      outcome: 'Procesamiento solicitado',
+      outcome: 'Rechazado por baja confianza',
     },
   ],
   next_cursor: null,
@@ -161,18 +163,105 @@ test.describe('Operaciones — OCR (ADR-008: document.manage)', () => {
       r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(OCR_PAGE) })
     )
     await page.goto('/ingesta')
-    await expect(page.getByRole('button', { name: /consultar estado ocr/i })).toBeVisible({ timeout: 8000 })
+    await expect(page.getByRole('button', { name: 'Reprocesar', exact: true })).toBeVisible({ timeout: 8000 })
   })
 
-  test('reproceso con estado 503 muestra estado incierto, no reintenta', async ({ page }) => {
+  test('reproceso 503 no confirmado muestra error, no reintenta', async ({ page }) => {
+    let posts = 0
     await page.route('**/api/documents/ocr**', (r) =>
       r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(OCR_PAGE) })
     )
-    await page.route('**/api/documents/*/ocr/reprocess', (r) =>
-      r.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'Estado incierto' }) })
-    )
+    await page.route('**/api/documents/*/ocr/reprocess', (r) => { posts++; return r.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'Estado incierto' }) }) })
     await page.goto('/ingesta')
-    await expect(page.getByRole('heading', { name: /gestión ocr/i })).toBeVisible({ timeout: 8000 })
+    await page.getByRole('button', { name: 'Reprocesar', exact: true }).click()
+    await page.getByRole('button', { name: 'Confirmar reproceso', exact: true }).click()
+    await expect(page.getByRole('dialog').getByRole('alert')).toContainText('El servicio no está disponible temporalmente')
+    await expect(page.getByRole('button', { name: 'Confirmar reproceso', exact: true })).toBeDisabled()
+    await expect(page.getByText(/Reproceso confirmado/)).toHaveCount(0)
+    expect(posts).toBe(1)
+  })
+})
+
+test.describe('SRS_REQUIRED: OCR veraz y autorizado — BROWSER_CONTRACT_E2E', () => {
+  for (const role of ['TI', 'ANALISTA']) {
+    test(`${role}: presenta nativos, ausencia y estados reales sin habilitar acciones falsas`, async ({ page }) => {
+      const principal = { ...ME_RESPONSE_TI, roles: [role] }
+      await page.route('**/api/auth/me', (r) => r.fulfill({ json: principal }))
+      const cases = [
+        ['DOCX-NATIVO', false, null, false, 'LISTA', null, 'No aplica'],
+        ['PDF-TEXTO', false, null, false, 'LISTA', null, 'No aplica'],
+        ['ESCANEADO-SIN-OCR', true, null, false, 'PROCESANDO', null, 'Sin resultado OCR'],
+        ['ESCANEADO-PENDIENTE', true, 'Pendiente', false, 'PENDIENTE', null, 'Pendiente'],
+        ['ESCANEADO-RECHAZADO', true, 'Rechazado por baja confianza', true, 'RECHAZADA', 0, 'Rechazado por baja confianza'],
+        ['ESCANEADO-EXITOSO', true, 'Exitoso', false, 'LISTA', 0.96, 'Exitoso'],
+        ['ESCANEADO-FALLIDO', true, null, false, 'FALLIDA', null, 'Sin resultado OCR'],
+      ]
+      const items = cases.map(([document_id, ocr_applicable, ocr_state, reprocess_eligible, processing_state, confidence]) => ({ ...OCR_PAGE.items[0], document_id, ocr_applicable, ocr_state, outcome: ocr_state, reprocess_eligible, processing_state, confidence }))
+      await page.route('**/api/documents/ocr**', (r) => r.fulfill({ json: { items, next_cursor: null } }))
+      await page.goto('/ingesta')
+      const table = page.getByRole('table', { name: 'Resultados operativos OCR' })
+      for (const [id, , , eligible, processing, confidence, label] of cases) {
+        const row = table.getByRole('row').filter({ has: page.getByRole('cell', { name: id, exact: true }) })
+        await expect(row.getByRole('cell', { name: label, exact: true })).toHaveCount(2)
+        await expect(row.getByRole('cell', { name: processing, exact: true })).toHaveCount(1)
+        await expect(row.getByRole('cell', { name: confidence === null ? 'No disponible' : String(confidence), exact: true })).toHaveCount(1)
+        await expect(row.getByRole('button', { name: 'Reprocesar', exact: true })).toHaveCount(eligible ? 1 : 0)
+      }
+      await expect(table.getByRole('button', { name: 'Reprocesar', exact: true })).toHaveCount(1)
+    })
+  }
+
+  test('Jurídico no accede a OCR ni emite su lectura', async ({ page }) => {
+    await mockSessionJuridico(page)
+    let reads = 0
+    await page.route('**/api/documents/ocr**', (r) => { reads++; return r.fulfill({ json: OCR_PAGE }) })
+    await page.goto('/ingesta')
+    await expect(page.getByRole('alert')).toContainText('Acceso no autorizado')
+    await expect(page.getByRole('heading', { name: 'Gestión OCR', exact: true })).toHaveCount(0)
+    expect(reads).toBe(0)
+  })
+
+  test('reproceso elegible conserva versión y confirma sólo el resultado HTTP recibido', async ({ page }) => {
+    let posts = 0
+    await page.route('**/api/documents/ocr**', (r) => r.fulfill({ json: OCR_PAGE }))
+    await page.route('**/api/documents/*/ocr/reprocess', async (r) => {
+      posts++
+      const body = r.request().postDataJSON()
+      expect(body.source_document_version_id).toBe(OCR_PAGE.items[0].document_version_id)
+      expect(body.request_id).toMatch(/^[0-9a-f-]{36}$/i)
+      await r.fulfill({ json: { operation_id: UPLOAD_RESULT.operation_id, document_id: OCR_PAGE.items[0].document_id, document_version_id: UPLOAD_RESULT.correlation_id, ocr_state: 'Exitoso', processing_state: 'LISTA', kpi_job_id: null, kpi_job_state: null } })
+    })
+    await page.goto('/ingesta')
+    await page.getByRole('button', { name: 'Reprocesar', exact: true }).click()
+    await page.getByRole('button', { name: 'Confirmar reproceso', exact: true }).click()
+    await expect(page.getByRole('dialog').getByRole('status')).toHaveText('Reproceso confirmado.')
+    await expect(page.getByRole('button', { name: 'Confirmar reproceso', exact: true })).toBeDisabled()
+    expect(posts).toBe(1)
+  })
+
+  test('elegibilidad obsoleta con POST 409 conserva el rechazo sin éxito aparente', async ({ page }) => {
+    let posts = 0
+    await page.route('**/api/documents/ocr**', (r) => r.fulfill({ json: OCR_PAGE }))
+    await page.route('**/api/documents/*/ocr/reprocess', (r) => { posts++; return r.fulfill({ status: 409, json: { detail: 'Versión ya procesada' } }) })
+    await page.goto('/ingesta')
+    await page.getByRole('button', { name: 'Reprocesar', exact: true }).click()
+    await page.getByRole('button', { name: 'Confirmar reproceso', exact: true }).click()
+    await expect(page.getByRole('dialog').getByRole('alert')).toContainText('conflicto')
+    await expect(page.getByText(/Reproceso confirmado/)).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Confirmar reproceso', exact: true })).toBeDisabled()
+    expect(posts).toBe(1)
+  })
+})
+
+test.describe('ROBUSTNESS: DTO OCR inválido — BROWSER_CONTRACT_E2E', () => {
+  test('ausencia del campo obligatorio no muestra lista parcial ni reproceso', async ({ page }) => {
+    const { reprocess_eligible, ...malformed } = OCR_PAGE.items[0]
+    await page.route('**/api/documents/ocr**', (r) => r.fulfill({ json: { items: [OCR_PAGE.items[0], { ...malformed, document_id: 'ILEGIBLE' }], next_cursor: null } }))
+    await page.goto('/ingesta')
+    const section = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Gestión OCR', exact: true }) })
+    await expect(section.getByRole('alert')).toContainText('El servicio no está disponible temporalmente')
+    await expect(page.getByRole('table', { name: 'Resultados operativos OCR' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Reprocesar', exact: true })).toHaveCount(0)
   })
 })
 

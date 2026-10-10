@@ -8,6 +8,8 @@ import {
 const id = '11111111-1111-4111-8111-111111111111'
 const id2 = '22222222-2222-4222-8222-222222222222'
 const ingestion = (overrides = {}) => ({ file_id: id, operation_id: id2, correlation_id: id, state: 'COMPLETADO', format: 'CSV', family: 'CUMPLIMIENTO', routing_target: 'VALIDATION', safe_cause_code: null, idempotent: false, ...overrides })
+const ocrItem = (overrides = {}) => ({ document_id: 'DOC-1', document_version_id: id, document_name: 'Documento', file_name: null, processing_state: 'PROCESANDO', ocr_applicable: true, reprocess_eligible: true, ocr_state: 'Pendiente', processed_at: null, confidence: null, total_page_count: null, ocr_processed_page_count: null, granularity: null, outcome: 'Pendiente', ...overrides })
+const readOcr = (row) => ocrPage({ items: [row], next_cursor: null }).items[0]
 
 describe('SRS_REQUIRED: adaptadores de operaciones', () => {
   it('distingue recepción de procesamiento downstream', () => {
@@ -36,8 +38,18 @@ describe('SRS_REQUIRED: adaptadores de operaciones', () => {
   })
 
   it('preserva null de confianza OCR sin convertirlo en cero', () => {
-    const page = ocrPage({ items: [{ document_id: 'DOC-1', document_version_id: id, document_name: 'Documento', file_name: null, processing_state: 'PROCESANDO', ocr_state: 'Pendiente', processed_at: null, confidence: null, total_page_count: null, ocr_processed_page_count: null, granularity: null, outcome: 'Pendiente' }], next_cursor: null })
+    const page = ocrPage({ items: [ocrItem()], next_cursor: null })
     expect(page.items[0].confidenceLabel).toBe('No disponible')
+    expect(readOcr(ocrItem({ confidence: 0 })).confidenceLabel).toBe('0')
+  })
+
+  it('distingue OCR no aplicable de escaneado sin resultado sin fabricar Pendiente', () => {
+    expect(readOcr(ocrItem({ ocr_applicable: false, reprocess_eligible: false, ocr_state: null, outcome: null, processing_state: 'LISTA' }))).toMatchObject({ ocr_state: null, outcome: null, ocrStateLabel: 'No aplica', outcomeLabel: 'No aplica', reprocess_eligible: false })
+    expect(readOcr(ocrItem({ reprocess_eligible: false, ocr_state: null, outcome: null }))).toMatchObject({ ocr_state: null, ocrStateLabel: 'Sin resultado OCR', outcomeLabel: 'Sin resultado OCR' })
+  })
+
+  it.each(['Pendiente', 'Exitoso', 'Rechazado por baja confianza'])('preserva el estado OCR contractual %s y la decisión de elegibilidad recibida', (state) => {
+    expect(readOcr(ocrItem({ ocr_state: state, outcome: state, reprocess_eligible: false }))).toMatchObject({ ocr_state: state, ocrStateLabel: state, outcomeLabel: state, reprocess_eligible: false })
   })
 
   it('limita filtros, valida zona horaria y reinicia cursor cuando cambian', () => {
@@ -61,5 +73,19 @@ describe('SRS_REQUIRED: adaptadores de operaciones', () => {
   it('presenta CD-03 sin confundir no disponible con cero', () => {
     expect(technicalResult({ kpi_code: 'KPI-CD-03', availability: 'DISPONIBLE', value: '0', calculated_at: '2030-01-01T00:00:00Z' }).displayValue).toBe('0 %')
     expect(technicalResult({ kpi_code: 'KPI-CD-03', availability: 'NO_DISPONIBLE', value: null, calculated_at: null }).displayValue).toBe('No disponible')
+  })
+})
+
+describe('ROBUSTNESS: DTO OCR estricto y denegación predeterminada', () => {
+  it.each([
+    { ocr_applicable: undefined }, { reprocess_eligible: undefined },
+    { ocr_applicable: 'false' }, { reprocess_eligible: 1 },
+    { ocr_state: 'No aplica', outcome: 'No aplica' },
+    { ocr_state: 'Sin resultado OCR', outcome: 'Sin resultado OCR' },
+    { ocr_state: 'Inventado', outcome: 'Inventado' },
+    { ocr_state: undefined, outcome: undefined },
+    { outcome: 'Exitoso' }, { confidence: NaN },
+  ])('rechaza el DTO inválido %j sin otorgar acciones', (patch) => {
+    expect(() => readOcr(ocrItem(patch))).toThrow(ApiError)
   })
 })

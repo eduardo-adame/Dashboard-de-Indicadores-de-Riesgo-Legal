@@ -61,8 +61,11 @@ export function reinjectionResult(data) {
 export function ocrPage(data) {
   assert(object(data) && Array.isArray(data.items) && nullable(data.next_cursor))
   const items = data.items.map((row) => {
-    assert(object(row) && text(row.document_id) && uuid(row.document_version_id) && text(row.document_name) && nullable(row.file_name) && text(row.processing_state) && text(row.ocr_state) && nullable(row.processed_at, timestamp) && nullable(row.confidence, (v) => typeof v === 'number' && Number.isFinite(v)) && nullable(row.total_page_count, Number.isInteger) && nullable(row.ocr_processed_page_count, Number.isInteger) && nullable(row.granularity) && text(row.outcome))
-    return { ...row, id: `${row.document_id}:${row.document_version_id}`, processedLabel: formatTimestamp(row.processed_at), confidenceLabel: row.confidence === null ? 'No disponible' : String(row.confidence) }
+    const ocrState = (value) => ['Pendiente', 'Exitoso', 'Rechazado por baja confianza'].includes(value)
+    assert(object(row) && text(row.document_id) && uuid(row.document_version_id) && text(row.document_name) && nullable(row.file_name) && text(row.processing_state) && typeof row.ocr_applicable === 'boolean' && typeof row.reprocess_eligible === 'boolean' && nullable(row.ocr_state, ocrState) && nullable(row.processed_at, timestamp) && nullable(row.confidence, (v) => typeof v === 'number' && Number.isFinite(v)) && nullable(row.total_page_count, Number.isInteger) && nullable(row.ocr_processed_page_count, Number.isInteger) && nullable(row.granularity) && nullable(row.outcome, ocrState) && row.outcome === row.ocr_state)
+    // Las etiquetas describen aplicabilidad; no sustituyen el estado persistido.
+    const ocrStateLabel = !row.ocr_applicable ? 'No aplica' : row.ocr_state ?? 'Sin resultado OCR'
+    return { ...row, id: `${row.document_id}:${row.document_version_id}`, ocrStateLabel, outcomeLabel: ocrStateLabel, processedLabel: formatTimestamp(row.processed_at), confidenceLabel: row.confidence === null ? 'No disponible' : String(row.confidence) }
   })
   return { items, next_cursor: data.next_cursor }
 }
