@@ -59,7 +59,7 @@ function IngestionWorkspace({ principal }) {
     <section className="space-y-4"><h2 className="text-base font-semibold">Recibir archivo</h2>
       <form onSubmit={upload} className="grid grid-cols-1 items-end gap-4 md:grid-cols-2">
         <Select label="Ubicación controlada" options={locations} value={location} disabled={blocked} onChange={(e) => setLocation(e.target.value)} />
-        <Input key={inputKey} label="Archivo (máximo 50 MiB)" type="file" required disabled={blocked} accept=".csv,.xlsx,.pdf,.docx,.zip" onChange={(e) => setFile(e.target.files[0] || null)} />
+        <Input key={inputKey} label="Archivo (máximo 50 MiB)" type="file" required disabled={blocked} accept=".csv,.xlsx,.pdf,.docx" onChange={(e) => setFile(e.target.files[0] || null)} />
         <div className="flex flex-wrap gap-3 md:col-span-2"><Button type="submit" busy={mutation.busy} disabled={blocked || !file || file.size > 52428800}>Recibir y procesar</Button>{can(principal, 'ingest.execute') && <Button variant="secondary" disabled={blocked} onClick={run}>Ejecutar ubicación</Button>}</div>
       </form>
       {file?.size > 52428800 && <p role="alert" className="text-[var(--critical)]">El archivo supera 50 MiB.</p>}
