@@ -15,7 +15,7 @@ import sqlalchemy as sa
 from sqlalchemy.engine import make_url
 
 from app.ingestion.models import SourceFamily
-from app.security.models import AuthenticatedPrincipal
+from app.security.models import AuditPersistenceError, AuthenticatedPrincipal
 from app.security.repository import SecurityRepository
 from app.security.service import SecurityService
 from app.security.tokens import JwtService
@@ -222,6 +222,81 @@ def test_retry_does_not_duplicate_quarantine_items(database) -> None:
     with engine.connect() as connection:
         total = connection.execute(sa.text("SELECT count(*) FROM app.quarantine_item WHERE ingest_file_id = :id"), {"id": file_id}).scalar_one()
     assert total == 2
+
+
+@pytest.mark.requires_db
+@pytest.mark.data_schema
+@pytest.mark.parametrize("invalid_snapshot_type", [False, True])
+def test_creation_event_references_persisted_quarantine_and_retry_preserves_it(database, invalid_snapshot_type) -> None:
+    engine, service, principal, _ = database
+    file_id, record_ids = _seed_file_and_records(engine, 1)
+    context = ValidationContext(operation_id=_namespace(), correlation_id=uuid4(), actor=principal)
+    record = _invalid_record(1, record_ids[0])
+    if invalid_snapshot_type:
+        record.values_by_name["Estado_Revision"] = bytearray(b"synthetic")
+    expected_cause = "INVALID_TYPE" if invalid_snapshot_type else "OUT_OF_CATALOG"
+    arguments = dict(file_id=file_id, family=SourceFamily.CONTRACTS_DOCUMENTS,
+                     headers=_HEADERS, records=(record,), context=context)
+    service.validate(**arguments)
+    with engine.connect() as connection:
+        item = connection.execute(sa.text(
+            "SELECT id, operation_id, correlation_id, original_payload FROM app.quarantine_item WHERE ingest_file_id=:id"
+        ), {"id": file_id}).mappings().one()
+        events_before = connection.execute(sa.text(
+            """SELECT id, resource_identifier, resource_type, actor_user_id, result, safe_cause_code
+               FROM audit.event WHERE action='QUARANTINE_CREATED' AND correlation_id=:id"""
+        ), {"id": context.correlation_id}).mappings().all()
+    assert len(events_before) == 1
+    event = events_before[0]
+    assert item["id"] != item["operation_id"]
+    assert item["correlation_id"] == context.correlation_id
+    assert event["resource_identifier"] == str(item["id"])
+    assert event["resource_type"] == "QUARANTINE_ITEM"
+    assert event["actor_user_id"] == principal.account_id
+    assert event["result"] == "SUCCESS"
+    assert event["safe_cause_code"] == expected_cause
+    service.validate(**arguments)
+    with engine.connect() as connection:
+        items_after = connection.execute(sa.text(
+            "SELECT id, operation_id, correlation_id, original_payload FROM app.quarantine_item WHERE ingest_file_id=:id"
+        ), {"id": file_id}).mappings().all()
+        events_after = connection.execute(sa.text(
+            """SELECT id, resource_identifier, resource_type, actor_user_id, result, safe_cause_code
+               FROM audit.event WHERE action='QUARANTINE_CREATED' AND correlation_id=:id"""
+        ), {"id": context.correlation_id}).mappings().all()
+    assert items_after == [item]
+    assert events_after == events_before
+
+
+@pytest.mark.requires_db
+@pytest.mark.data_schema
+@pytest.mark.parametrize("invalid_snapshot_type", [False, True])
+def test_creation_audit_failure_rolls_back_item_in_both_validation_branches(database, invalid_snapshot_type) -> None:
+    engine, service, principal, _ = database
+    file_id, record_ids = _seed_file_and_records(engine, 1)
+    context = ValidationContext(operation_id=_namespace(), correlation_id=uuid4(), actor=principal)
+    record = _invalid_record(1, record_ids[0])
+    if invalid_snapshot_type:
+        record.values_by_name["Estado_Revision"] = bytearray(b"synthetic")
+    original = service.repository.write_audit_event
+
+    def fail_audit(*args, **kwargs):
+        raise AuditPersistenceError("fallo sintético de auditoría")
+
+    service.repository.write_audit_event = fail_audit
+    try:
+        with pytest.raises(AuditPersistenceError):
+            service.validate(file_id=file_id, family=SourceFamily.CONTRACTS_DOCUMENTS,
+                             headers=_HEADERS, records=(record,), context=context)
+    finally:
+        service.repository.write_audit_event = original
+    with engine.connect() as connection:
+        assert connection.execute(sa.text(
+            "SELECT count(*) FROM app.quarantine_item WHERE ingest_file_id=:id"
+        ), {"id": file_id}).scalar_one() == 0
+        assert connection.execute(sa.text(
+            "SELECT count(*) FROM audit.event WHERE action='QUARANTINE_CREATED' AND correlation_id=:id"
+        ), {"id": context.correlation_id}).scalar_one() == 0
 
 
 @pytest.mark.requires_db

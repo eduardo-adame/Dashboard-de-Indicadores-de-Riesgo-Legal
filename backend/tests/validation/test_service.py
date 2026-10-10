@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.ingestion.models import SourceFamily
-from app.security.models import AuthenticatedPrincipal
+from app.security.models import AuditPersistenceError, AuthenticatedPrincipal
 from app.validation.models import (
     QuarantineCause,
     QuarantineState,
@@ -17,6 +17,7 @@ from app.validation.models import (
     ValidationResult,
 )
 from app.validation.quarantine import QuarantineError, QuarantineItem
+from app.validation.records import derive_record_operation_id
 from app.validation.service import TabularRecord, ValidationContext, ValidationService
 
 
@@ -562,3 +563,101 @@ def test_reinjection_produces_validated_snapshot_for_reinjected_record() -> None
     )
     assert result.validated_record is not None
     assert result.quarantine_item.state == QuarantineState.REINYECTADO
+
+
+def _creation_record(invalid_snapshot_type: bool) -> TabularRecord:
+    record = _record(1, valid=False)
+    if invalid_snapshot_type:
+        # El tipo no admite snapshot, pero sí la serialización segura del repositorio.
+        record.values_by_name["Estado_Revision"] = bytearray(b"synthetic")
+    return record
+
+
+@pytest.mark.parametrize("invalid_snapshot_type", [False, True])
+def test_quarantine_creation_audits_persisted_item_identity(invalid_snapshot_type) -> None:
+    repository = InMemoryValidationRepository()
+    context, file_id = _context(), uuid4()
+    record = _creation_record(invalid_snapshot_type)
+    result = _service(repository).validate(
+        file_id=file_id, family=SourceFamily.CONTRACTS_DOCUMENTS,
+        headers=_HEADERS, records=(record,), context=context,
+    )
+    item = next(iter(repository.items.values()))
+    expected_cause = QuarantineCause.INVALID_TYPE if invalid_snapshot_type else QuarantineCause.OUT_OF_CATALOG
+    assert result.quarantined == ((1, expected_cause),)
+    assert result.validated_records == ()
+    assert item.operation_id == derive_record_operation_id(context.operation_id, record.source_record_id)
+    assert item.id != item.operation_id
+    assert item.ingest_file_id == file_id
+    assert item.source_record_id == record.source_record_id
+    assert item.state == QuarantineState.PENDIENTE
+    assert item.original_payload == record.values_by_name
+    assert repository.audit_events == [{
+        "actor": context.actor, "action": "QUARANTINE_CREATED",
+        "resource_type": "QUARANTINE_ITEM", "resource_identifier": str(item.id),
+        "result": "SUCCESS", "correlation_id": context.correlation_id,
+        "safe_cause_code": expected_cause.value,
+    }]
+
+
+@pytest.mark.parametrize("invalid_snapshot_type", [False, True])
+def test_quarantine_creation_retry_preserves_item_and_event(invalid_snapshot_type) -> None:
+    repository = InMemoryValidationRepository()
+    service, context, file_id = _service(repository), _context(), uuid4()
+    record = _creation_record(invalid_snapshot_type)
+    arguments = dict(file_id=file_id, family=SourceFamily.CONTRACTS_DOCUMENTS,
+                     headers=_HEADERS, records=(record,), context=context)
+    service.validate(**arguments)
+    items_before, events_before = dict(repository.items), list(repository.audit_events)
+    service.validate(**arguments)
+    assert repository.items == items_before
+    assert repository.audit_events == events_before
+    assert len(repository.items) == len(repository.audit_events) == 1
+
+
+@pytest.mark.parametrize("invalid_snapshot_type", [False, True])
+def test_quarantine_creation_audit_failure_propagates_to_transaction(invalid_snapshot_type) -> None:
+    class Repository(InMemoryValidationRepository):
+        @contextmanager
+        def transaction(self):
+            items_before, events_before = dict(self.items), list(self.audit_events)
+            self.connection = object()
+            try:
+                yield self.connection
+            except AuditPersistenceError:
+                self.items, self.audit_events = items_before, events_before
+                raise
+
+        def insert_quarantine(self, connection, **kwargs):
+            assert connection is self.connection
+            return super().insert_quarantine(connection, **kwargs)
+
+        def write_audit_event(self, connection, **kwargs):
+            assert connection is self.connection
+            assert kwargs["resource_identifier"] in {str(identity) for identity in self.items}
+            raise AuditPersistenceError("fallo sintético de auditoría")
+
+    repository = Repository()
+    with pytest.raises(AuditPersistenceError):
+        _service(repository).validate(
+            file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS, headers=_HEADERS,
+            records=(_creation_record(invalid_snapshot_type),), context=_context(),
+        )
+    assert repository.items == {}
+    assert repository.audit_events == []
+
+
+def test_quarantine_creation_does_not_rewrite_historical_events() -> None:
+    repository = InMemoryValidationRepository()
+    historical = {"action": "QUARANTINE_CREATED", "resource_identifier": str(uuid4())}
+    historical_before = dict(historical)
+    repository.audit_events.append(historical)
+    _service(repository).validate(
+        file_id=uuid4(), family=SourceFamily.CONTRACTS_DOCUMENTS, headers=_HEADERS,
+        records=(_record(1, valid=False), _record(2, valid=False)), context=_context(),
+    )
+    assert repository.audit_events[0] is historical
+    assert repository.audit_events[0] == historical_before
+    assert {event["resource_identifier"] for event in repository.audit_events[1:]} == {
+        str(item_id) for item_id in repository.items
+    }

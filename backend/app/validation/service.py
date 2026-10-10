@@ -145,7 +145,7 @@ class ValidationService:
                 )
                 existing = self.repository.find_quarantine_by_operation(connection, child_operation_id)
                 if existing is None:
-                    self.repository.insert_quarantine(
+                    quarantine_id = self.repository.insert_quarantine(
                         connection,
                         file_id=file_id,
                         source_record_id=record.source_record_id,
@@ -159,7 +159,7 @@ class ValidationService:
                         actor=context.actor,
                         action="QUARANTINE_CREATED",
                         resource_type="QUARANTINE_ITEM",
-                        resource_identifier=str(child_operation_id),
+                        resource_identifier=str(quarantine_id),
                         result="SUCCESS",
                         correlation_id=context.correlation_id,
                         safe_cause_code=outcome.cause.value if outcome.cause else None,
@@ -439,14 +439,14 @@ class ValidationService:
         child_operation_id = derive_record_operation_id(context.operation_id, record.source_record_id)
         existing = self.repository.find_quarantine_by_operation(connection, child_operation_id)
         if existing is None:
-            self.repository.insert_quarantine(
+            quarantine_id = self.repository.insert_quarantine(
                 connection, file_id=file_id, source_record_id=record.source_record_id,
                 cause=QuarantineCause.INVALID_TYPE, operation_id=child_operation_id,
                 correlation_id=context.correlation_id, original_payload=payload,
             )
             self.repository.write_audit_event(
                 connection, actor=context.actor, action="QUARANTINE_CREATED",
-                resource_type="QUARANTINE_ITEM", resource_identifier=str(child_operation_id),
+                resource_type="QUARANTINE_ITEM", resource_identifier=str(quarantine_id),
                 result="SUCCESS", correlation_id=context.correlation_id,
                 safe_cause_code=QuarantineCause.INVALID_TYPE.value,
             )
