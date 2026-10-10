@@ -99,6 +99,21 @@ _CAUSE_DESCRIPTIONS = {
     QuarantineCause.IDENTITY_CONFLICT: "Conflicto de identidad",
     QuarantineCause.TECHNICAL_READ_FAILURE: "Fallo técnico de lectura",
     QuarantineCause.OTHER_CAUSE: "Otra causa de rechazo",
+    QuarantineCause.FORMAT_MISMATCH: "El formato detectado no coincide con la extensión declarada",
+    QuarantineCause.ARCHIVE_LIMIT_EXCEEDED: "El contenedor supera los límites de tamaño o entradas",
+    QuarantineCause.ARCHIVE_COMPRESSION_RATIO_EXCEEDED: "El contenedor supera el límite de compresión",
+    QuarantineCause.CORRUPT_ARCHIVE: "El contenedor está corrupto o no puede leerse",
+    QuarantineCause.BINARY_CONTENT: "El archivo tabular contiene datos binarios",
+    QuarantineCause.UNSUPPORTED_ENCODING: "La codificación del archivo no está admitida",
+    QuarantineCause.UNDETERMINABLE_STRUCTURE: "No puede determinarse una estructura tabular consistente",
+    QuarantineCause.AMBIGUOUS_DELIMITER: "El separador de campos es ambiguo",
+    QuarantineCause.PROTECTED_PDF: "El PDF está protegido y no puede leerse",
+    QuarantineCause.CORRUPT_PDF: "La estructura del PDF está corrupta",
+    QuarantineCause.UNSUPPORTED_FORMAT: "El contenido no corresponde a un formato admitido",
+    QuarantineCause.TABULAR_LIMIT_EXCEEDED: "El contenido tabular supera los límites de filas, columnas o celdas",
+    QuarantineCause.PROTECTED_DOCUMENT: "El documento está protegido y no puede extraerse",
+    QuarantineCause.EMPTY_DOCUMENT: "El documento no contiene contenido extraíble",
+    QuarantineCause.TECHNICAL_FAILURE: "Fallo técnico de procesamiento",
 }
 
 

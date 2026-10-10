@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -173,3 +174,90 @@ def test_quarantine_audit_failure_exposes_no_payload() -> None:
     response = _http_client(Service()).get("/api/validation/quarantine")
     assert response.status_code == 503
     assert "private" not in response.text
+
+
+# Inventario independiente del enum para detectar causas persistidas sin contrato HTTP.
+_PERSISTABLE_QUARANTINE_CAUSES = (
+    "MISSING_REQUIRED_FIELD", "INVALID_TYPE", "INVALID_DATE", "OUT_OF_CATALOG",
+    "NEGATIVE_AMOUNT", "DATE_ORDER_VIOLATION", "STRUCTURAL_INCONSISTENCY",
+    "IDENTITY_CONFLICT", "TECHNICAL_READ_FAILURE", "OTHER_CAUSE",
+    "FORMAT_MISMATCH", "ARCHIVE_LIMIT_EXCEEDED", "ARCHIVE_COMPRESSION_RATIO_EXCEEDED",
+    "CORRUPT_ARCHIVE", "BINARY_CONTENT", "UNSUPPORTED_ENCODING",
+    "UNDETERMINABLE_STRUCTURE", "AMBIGUOUS_DELIMITER", "PROTECTED_PDF", "CORRUPT_PDF",
+    "UNSUPPORTED_FORMAT", "TABULAR_LIMIT_EXCEEDED", "PROTECTED_DOCUMENT",
+    "EMPTY_DOCUMENT", "TECHNICAL_FAILURE",
+)
+
+
+def _retained_row(cause: str, position: int = 0) -> dict[str, object]:
+    return {
+        "id": uuid4(), "ingest_file_id": uuid4(), "source_record_id": None,
+        "row_number": None, "source_family": "CONTRATOS_DOCUMENTOS",
+        "created_at": datetime(2026, 10, 1, tzinfo=timezone.utc) + timedelta(seconds=position),
+        "cause_code": cause, "state": "Pendiente", "original_payload": None,
+        "candidate_payload": None, "discard_justification": None,
+    }
+
+
+class _RetainedRows(_QuarantineHttp):
+    """Aísla persistencia sin sustituir la conversión real de filas a DTO."""
+
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+        self.queries: list[dict[str, object]] = []
+
+    def quarantine_page(self, **kwargs):
+        self.queries.append(kwargs)
+        rows = [row for row in self.rows if kwargs["cause"] is None or row["cause_code"] == kwargs["cause"]]
+        if kwargs["after"] is not None:
+            rows = [row for row in rows if (row["created_at"], row["id"]) > kwargs["after"]]
+        return rows[:kwargs["limit"]], len(rows) > kwargs["limit"]
+
+
+@pytest.mark.parametrize("cause", _PERSISTABLE_QUARANTINE_CAUSES)
+def test_all_persistable_quarantine_causes_keep_semantics_in_api(cause: str) -> None:
+    # SRS_REQUIRED: RF-011/RF-013/RF-014 preservan elemento y causa del rechazo.
+    row = _retained_row(cause)
+    response = _http_client(_RetainedRows([row])).get("/api/validation/quarantine")
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["id"] == str(row["id"])
+    assert item["cause_code"] == cause
+    assert item["cause_description"].strip()
+    assert item["cause_code"] != "UNKNOWN"
+    if cause == "FORMAT_MISMATCH":
+        assert item["cause_description"] == "El formato detectado no coincide con la extensión declarada"
+    assert item["source_record_id"] is None
+    assert item["original_payload"] is None
+
+
+def test_global_quarantine_page_serializes_every_persistable_cause() -> None:
+    rows = [_retained_row(cause, position) for position, cause in enumerate(_PERSISTABLE_QUARANTINE_CAUSES)]
+    client = _http_client(_RetainedRows(rows))
+    response = client.get("/api/validation/quarantine")
+    assert response.status_code == 200
+    assert [item["cause_code"] for item in response.json()["items"]] == list(_PERSISTABLE_QUARANTINE_CAUSES)
+    assert response.json()["next_cursor"] is None
+    schema = client.get("/openapi.json").json()["components"]["schemas"]["QuarantineCause"]
+    assert set(schema["enum"]) == set(_PERSISTABLE_QUARANTINE_CAUSES)
+
+
+def test_format_mismatch_filter_and_cursor_preserve_item_and_cause() -> None:
+    # ROBUSTNESS: el cursor real mantiene el filtro y no repite el primer elemento.
+    rows = [_retained_row("FORMAT_MISMATCH", 0), _retained_row("INVALID_DATE", 1), _retained_row("FORMAT_MISMATCH", 2)]
+    service = _RetainedRows(rows)
+    client = _http_client(service)
+    first = client.get("/api/validation/quarantine", params={"cause_code": "FORMAT_MISMATCH", "limit": 1})
+    assert first.status_code == 200
+    assert first.json()["items"][0]["id"] == str(rows[0]["id"])
+    assert first.json()["items"][0]["cause_code"] == "FORMAT_MISMATCH"
+    assert first.json()["next_cursor"]
+    second = client.get("/api/validation/quarantine", params={
+        "cause_code": "FORMAT_MISMATCH", "limit": 1, "cursor": first.json()["next_cursor"],
+    })
+    assert second.status_code == 200
+    assert second.json()["items"][0]["id"] == str(rows[2]["id"])
+    assert second.json()["items"][0]["cause_code"] == "FORMAT_MISMATCH"
+    assert second.json()["next_cursor"] is None
+    assert service.queries[1]["after"] == (rows[0]["created_at"], rows[0]["id"])
+    assert service.queries[1]["cause"] == "FORMAT_MISMATCH"
