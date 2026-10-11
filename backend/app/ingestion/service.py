@@ -18,6 +18,7 @@ from openpyxl.utils.exceptions import InvalidFileException
 from pypdf.errors import PdfReadError
 
 from app.ingestion.detection import detect_format
+from app.audit.emission import write_process_event
 from app.ingestion.document_candidate_repository import DocumentCandidateRepository
 from app.ingestion.extraction import extract_document, extract_tabular
 from app.ingestion.models import (
@@ -106,6 +107,7 @@ class IngestionService:
         source_locator: str,
         idempotency_key: str | None,
         correlation_id: UUID | None = None,
+        automatic_discovery: bool = False,
     ) -> IngestionResult:
         if controlled_location not in CONTROLLED_LOCATIONS:
             raise RejectedFileError("UNKNOWN_CONTROLLED_LOCATION")
@@ -120,6 +122,7 @@ class IngestionService:
                 limit=limit, family=family, principal=principal, capability=capability,
                 source_locator=source_locator, idempotency_key=idempotency_key, operation_id=operation_id,
                 correlation_id=correlation, file_id=file_id,
+                automatic_discovery=automatic_discovery,
             )
         try:
             detection = detect_format(staged.path, original_name, self.limits)
@@ -237,6 +240,13 @@ class IngestionService:
                         resource_identifier=str(file_id), result=technical_result, correlation_id=correlation,
                         safe_cause_code=cause,
                     )
+                    if automatic_discovery:
+                        write_process_event(
+                            connection, process_identifier="ingestion.controlled_discovery",
+                            action="AUTOMATIC_INGESTION", resource_type="INGEST_FILE",
+                            resource_identifier=str(file_id), operation_id=operation_id,
+                            correlation_id=correlation, result=technical_result, safe_cause_code=cause,
+                        )
         except Exception:
             if staged.path.exists() and denied is None:
                 staged.path.unlink(missing_ok=True)
@@ -250,7 +260,7 @@ class IngestionService:
             family, routing_target, cause, False, records, document,
         )
 
-    def run_location(self, controlled_root: Path, controlled_location: str, principal: AuthenticatedPrincipal) -> list[IngestionResult]:
+    def run_location(self, controlled_root: Path, controlled_location: str, principal: AuthenticatedPrincipal, *, correlation_id: UUID | None = None) -> list[IngestionResult]:
         if controlled_location not in CONTROLLED_LOCATIONS:
             raise RejectedFileError("UNKNOWN_CONTROLLED_LOCATION")
         location = controlled_root / controlled_location
@@ -281,6 +291,7 @@ class IngestionService:
                             stream, original_name=path.name, controlled_location=controlled_location,
                             principal=principal, capability="ingest.execute",
                             source_locator=f"controlled/{controlled_location}/{path.name}", idempotency_key=None,
+                            correlation_id=correlation_id, automatic_discovery=True,
                         )
                     )
             finally:
@@ -300,6 +311,7 @@ class IngestionService:
         operation_id: UUID,
         correlation_id: UUID,
         file_id: UUID,
+        automatic_discovery: bool = False,
     ) -> IngestionResult:
         denied: SecurityError | None = None
         with self.repository.transaction() as connection:
@@ -327,6 +339,13 @@ class IngestionService:
                     resource_identifier=str(file_id), result="REJECTED", correlation_id=correlation_id,
                     safe_cause_code=limit.cause_code,
                 )
+                if automatic_discovery:
+                    write_process_event(
+                        connection, process_identifier="ingestion.controlled_discovery",
+                        action="AUTOMATIC_INGESTION", resource_type="INGEST_FILE",
+                        resource_identifier=str(file_id), operation_id=operation_id,
+                        correlation_id=correlation_id, result="REJECTED", safe_cause_code=limit.cause_code,
+                    )
         if denied is not None:
             raise denied
         return IngestionResult(

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
@@ -12,7 +13,7 @@ from app.ingestion.models import IdempotencyConflictError, IngestionLimits, Inge
 from app.ingestion.repository import IngestionRepository
 from app.ingestion.service import IngestionService
 from app.security.api import require, security_settings, service_for
-from app.security.models import AuthenticatedPrincipal, SecurityError
+from app.security.models import AuditPersistenceError, AuthenticatedPrincipal, SecurityError
 from app.security.service import SecurityService
 
 
@@ -33,6 +34,7 @@ class IngestionResponse(BaseModel):
 
 class RunRequest(BaseModel):
     controlled_location: str = Field(min_length=1, max_length=128)
+    correlation_id: UUID | None = None
 
 
 class RunResponse(BaseModel):
@@ -92,6 +94,8 @@ def upload_file(
         raise HTTPException(status_code=409, detail="La clave de idempotencia corresponde a otro contenido") from None
     except RejectedFileError:
         raise HTTPException(status_code=422, detail="El archivo no pudo aceptarse para procesamiento") from None
+    except AuditPersistenceError:
+        raise HTTPException(status_code=503, detail="La ingesta no pudo confirmarse") from None
     except SecurityError:
         raise HTTPException(status_code=403, detail="Acceso no autorizado") from None
     return _response(result)
@@ -105,9 +109,14 @@ def run_ingestion(
     settings: Settings = Depends(security_settings),
 ) -> RunResponse:
     try:
-        results = service.run_location(Path(settings.ingestion_controlled_root), payload.controlled_location, principal)
+        results = service.run_location(
+            Path(settings.ingestion_controlled_root), payload.controlled_location, principal,
+            **({"correlation_id": payload.correlation_id} if payload.correlation_id else {}),
+        )
     except RejectedFileError:
         raise HTTPException(status_code=422, detail="La ubicación controlada no es válida") from None
+    except AuditPersistenceError:
+        raise HTTPException(status_code=503, detail="La ingesta no pudo confirmarse") from None
     except SecurityError:
         raise HTTPException(status_code=403, detail="Acceso no autorizado") from None
     return RunResponse(processed=len(results), results=[_response(result) for result in results])

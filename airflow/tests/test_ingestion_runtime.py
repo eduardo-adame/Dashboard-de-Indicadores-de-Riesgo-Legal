@@ -129,3 +129,43 @@ def test_airflow_uses_application_boundary_without_sql() -> None:
     assert "/api/coordination/proactive-analysis/scheduled" in source
     assert "psycopg" not in source
     assert "proactive_input_snapshot" not in source
+
+
+def test_ingestion_and_dispatch_share_interval_correlation_and_retry_identity(monkeypatch) -> None:
+    """RF-087: el coordinador transporta correlación, nunca fabrica el actor del evento."""
+    runtime = _module()
+    monkeypatch.setattr(runtime, "_login", lambda _endpoint: ({"Authorization": "synthetic"}, "pipeline"))
+    calls = []
+
+    class Response:
+        def __init__(self, value):
+            self.value = value
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.value
+
+    def post(url, **kwargs):
+        calls.append((url, kwargs))
+        if url.endswith("/api/ingestion/runs"):
+            return Response({"results": [
+                {"file_id": "synthetic-file", "routing_target": "DOCUMENT"},
+                {"file_id": "rejected-file", "routing_target": "NONE"},
+            ]})
+        return Response({"state": "COMPLETED"})
+
+    monkeypatch.setattr(runtime.requests, "post", post)
+    context = _context()
+    runtime.run_controlled_ingestion(**context)
+    first = list(calls)
+    calls.clear()
+    runtime.run_controlled_ingestion(**context)
+    assert calls == first
+    ingestion = [kwargs["json"] for url, kwargs in calls if url.endswith("/api/ingestion/runs")]
+    dispatch = [kwargs["json"] for url, kwargs in calls if url.endswith("/api/coordination/dispatch")]
+    assert len(ingestion) == len(dispatch) == 4
+    assert {payload["correlation_id"] for payload in ingestion + dispatch} == {runtime._correlation_id(context)}
+    assert all(payload["file_id"] == "synthetic-file" for payload in dispatch)
+    assert not any("process_identifier" in payload or "actor_type" in payload for payload in ingestion + dispatch)

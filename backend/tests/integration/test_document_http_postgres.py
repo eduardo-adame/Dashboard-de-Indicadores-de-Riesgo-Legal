@@ -343,13 +343,14 @@ def test_revocation_during_ocr_prevents_activation_and_success_audit(database):
     document, source = _seed(database)
     def revoke():
         with psycopg.connect(database["owner"]) as connection:
-            connection.execute("DELETE FROM app.user_role WHERE user_id=%s", (database["principal"].account_id,))
+            connection.execute("UPDATE app.user_role SET active=false,revoked_at=CURRENT_TIMESTAMP WHERE user_id=%s", (database["principal"].account_id,))
     database["state"]["ocr_hook"] = revoke
     response, _ = _request(database, document, source)
     assert response.status_code == 403
     assert document not in response.text and str(source) not in response.text
     versions, certificates, audits, active = _counts(database, document)
-    assert versions == 2 and certificates == 1
+    # La revalidación posterior al motor impide crear resultados sin permiso vigente.
+    assert versions == 1 and certificates == 0
     assert audits == 0 and active is None
     with psycopg.connect(database["owner"]) as connection:
         assert connection.execute("SELECT count(*) FROM audit.event WHERE actor_user_id=%s AND action='AUTHORIZATION_DENIED'",

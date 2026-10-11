@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from uuid import UUID
+from app.audit.emission import write_process_event
 
 from app.documents.models import DocumentVersionState, StaleWriteError
 from app.documents.repository import DocumentsRepository
@@ -70,9 +71,23 @@ def process_candidate(
     ocr_used = bool(required_pages)
     ocr_text_by_page: dict[int, tuple[str, float | None]] = {}
     if ocr_used:
-        if ocr_pipeline is None:
-            raise RuntimeError("pipeline OCR no configurado para candidato que requiere OCR")
-        ocr_text_by_page = ocr_pipeline(file_id, candidate)
+        try:
+            if ocr_pipeline is None:
+                raise RuntimeError("pipeline OCR no configurado para candidato que requiere OCR")
+            ocr_text_by_page = ocr_pipeline(file_id, candidate)
+        except Exception:
+            # El intento falló: registrar sólo categoría segura, nunca confirmar un resultado OCR.
+            if not getattr(context, "manual_ocr_reprocess", False):
+                with repository.transaction() as connection:
+                    service._authorize(connection, operation_context, "document.manage")
+                    write_process_event(
+                        connection, process_identifier="documents.ocr_pipeline", action="AUTOMATIC_OCR",
+                        resource_type="INGEST_FILE", resource_identifier=str(file_id),
+                        operation_id=context.operation_id, correlation_id=context.correlation_id,
+                        result="FAILED", safe_cause_code="OCR_PROCESSING_FAILED",
+                        attempt_number=getattr(context, "attempt_number", 1),
+                    )
+            raise
 
     confidences = [ocr_text_by_page[n][1] for n in required_pages if n in ocr_text_by_page]
     aggregate = aggregate_confidence(confidences) if ocr_used else None
@@ -83,6 +98,7 @@ def process_candidate(
 
     # La identidad durable del despacho permite recuperar la misma candidata.
     with repository.transaction() as connection:
+        service._authorize(connection, operation_context, "document.manage")
         document = repository.create_or_get_document(
             connection,
             id_documento=id_documento,
@@ -148,6 +164,8 @@ def process_candidate(
                     operation_id=context.operation_id,
                     correlation_id=context.correlation_id,
                 )
+                if not getattr(context, "manual_ocr_reprocess", False):
+                    _audit_ocr_result(connection, version_id, context, aggregate)
             return None
 
         digest = hashlib.sha256(consolidated.text.encode("utf-8")).digest()
@@ -191,6 +209,9 @@ def process_candidate(
                 correlation_id=context.correlation_id,
             )
 
+            if not getattr(context, "manual_ocr_reprocess", False):
+                _audit_ocr_result(connection, version_id, context, aggregate)
+
         expected_active_version_id = document.active_version_id
 
     # BGE-M3 se ejecuta fuera de una transacción PostgreSQL larga.
@@ -224,3 +245,14 @@ def process_candidate(
             return version_id
         raise
     return activated
+
+
+def _audit_ocr_result(connection, version_id, context, aggregate):
+    # Resultado del motor, no certificación de indexación ni activación del corpus.
+    write_process_event(
+        connection, process_identifier="documents.ocr_pipeline", action="AUTOMATIC_OCR",
+        resource_type="DOCUMENT_VERSION", resource_identifier=str(version_id),
+        operation_id=context.operation_id, correlation_id=context.correlation_id,
+        result=_ocr_estado(aggregate),
+        safe_cause_code="OCR_LOW_CONFIDENCE" if aggregate is not None and aggregate < LOW_CONFIDENCE_THRESHOLD else None,
+    )

@@ -24,7 +24,7 @@ from app.coordination.proactive_integration import (
 from app.coordination.proactive_repository import ProactiveIntegrationRepository
 from app.coordination.service import CoordinationService
 from app.security.api import require, security_settings, service_for
-from app.security.models import AuthenticatedPrincipal, SecurityError
+from app.security.models import AuditPersistenceError, AuthenticatedPrincipal, SecurityError
 from app.security.service import SecurityService
 
 router = APIRouter(prefix="/api/coordination", tags=["coordination"])
@@ -117,6 +117,8 @@ def dispatch_result(
 
     try:
         outcome = service.dispatch(file_id=file_id, correlation_id=correlation_id, actor=principal)
+    except AuditPersistenceError:
+        raise HTTPException(status_code=503, detail="El procesamiento no pudo confirmarse") from None
     except SecurityError:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acceso no autorizado") from None
     return DispatchResponse(

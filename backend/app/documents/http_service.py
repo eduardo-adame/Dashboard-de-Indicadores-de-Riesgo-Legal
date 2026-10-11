@@ -146,7 +146,7 @@ class DocumentHttpService:
                                     or existing["stored_object_id"] != source["stored_object_id"]):
                                 raise DocumentHttpConflict("Identidad de intento incompatible")
                             correlation_id = existing["correlation_id"]
-                    context = DispatchContext(operation_id, correlation_id, current)
+                    context = DispatchContext(operation_id, correlation_id, current, manual_ocr_reprocess=True)
                     if self.kpi_integration is None or self.runner is None:
                         raise DocumentHttpUnavailable("Procesamiento no configurado")
                     if existing is not None and existing["processing_state"] == "FALLIDA":

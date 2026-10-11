@@ -23,6 +23,8 @@ class DispatchContext:
     operation_id: UUID
     correlation_id: UUID
     actor: AuthenticatedPrincipal
+    manual_ocr_reprocess: bool = False
+    attempt_number: int = 1
 
 
 @dataclass(frozen=True)
@@ -88,7 +90,10 @@ class CoordinationService:
 
         # Procesamiento downstream: SIN transacción de coordinación abierta.
         try:
-            result_id = self._run_downstream(target_value, file_id, operation_id, persisted_correlation_id, actor)
+            result_id = self._run_downstream(
+                target_value, file_id, operation_id, persisted_correlation_id, actor,
+                attempt_number=dispatch.attempt_count + 1,
+            )
         except Exception as exc:  # noqa: BLE001 - se propaga tras registrar el fallo
             with self.repository.transaction() as connection:
                 self.repository.fail(connection, dispatch_id, safe_cause_code=exc.__class__.__name__.upper())
@@ -106,8 +111,12 @@ class CoordinationService:
         operation_id: UUID,
         correlation_id: UUID,
         actor: AuthenticatedPrincipal,
+        attempt_number: int = 1,
     ) -> UUID | None:
-        context = DispatchContext(operation_id=operation_id, correlation_id=correlation_id, actor=actor)
+        context = DispatchContext(
+            operation_id=operation_id, correlation_id=correlation_id, actor=actor,
+            attempt_number=attempt_number,
+        )
         if target_value == "VALIDATION":
             if self._validation_runner is None:
                 raise CoordinationError("runner de validación no configurado")

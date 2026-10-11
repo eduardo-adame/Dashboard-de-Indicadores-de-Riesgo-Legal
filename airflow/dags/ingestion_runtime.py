@@ -40,7 +40,7 @@ def run_controlled_ingestion(**context) -> None:
         for location in ("contracts-documents", "litigation", "compliance", "internal-audit"):
             response = requests.post(
                 f"{endpoint}/api/ingestion/runs",
-                json={"controlled_location": location},
+                json={"controlled_location": location, "correlation_id": correlation_id},
                 headers=headers,
                 timeout=120,
             )
